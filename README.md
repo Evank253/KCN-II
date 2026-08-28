@@ -7,6 +7,9 @@ Sealed case-intelligence console. Independent review workspace for sources, scan
 **Legal Pack:** [LICENSE](LICENSE) · [USER_AGREEMENT.md](USER_AGREEMENT.md) · [LEGAL.md](LEGAL.md)  
 **Certification:** [COMPLIANCE.md](COMPLIANCE.md) (IDPC-1.0 — operator-attested device tests, not ISO / SOC / FedRAMP / CJIS)
 
+**Source:** [github.com/Evank253/KCN-II](https://github.com/Evank253/KCN-II)  
+**Live console:** this Grok Build session. A public `*.grok.me` address is issued when you tap **Publish** here (choose anyone-with-the-link to share). That same address is the installable web app (Add to Home Screen).
+
 KCN-II is **not** law enforcement, **not** a court, and **not** a classified government system. The American intelligence look is design only. Human review is required on every automatic lead.
 
 ---
