@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createIntelAudio, type IntelAudio } from "@/lib/kcn/boot-audio";
-import { LEGAL_DOCS } from "@/lib/kcn/legal-copy";
+import { LEGAL_DOCS, recordLegalAcceptance } from "@/lib/kcn/legal-copy";
 import { Seal } from "./seal";
 
 const LINES = [
@@ -38,6 +38,7 @@ export function BootSequence({ onDone }: Props) {
 
   async function engage() {
     if (!agreed) return;
+    recordLegalAcceptance();
     await audio.current?.unlock();
     audio.current?.drone(true);
     audio.current?.ping();
@@ -100,10 +101,11 @@ export function BootSequence({ onDone }: Props) {
               </span>
             </label>
             <button className="kcn-tiny mt-2 text-cyan underline" type="button" onClick={() => setShowLegal((v) => !v)}>
-              {showLegal ? "Hide agreements" : "Read agreements"}
+              {showLegal ? "Hide agreements" : "Read License, User Agreement, and Legal Agreement"}
             </button>
             {showLegal && (
               <div className="kcn-boot-legal">
+                <p className="kcn-tiny kcn-muted mb-2">Legal Pack v1.1 — effective 27 August 2026. Same text as the GitHub files.</p>
                 <div className="mb-2 flex flex-wrap justify-center gap-2">
                   {LEGAL_DOCS.map((d) => (
                     <button

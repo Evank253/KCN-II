@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { classifyText } from "@/lib/kcn/classify";
-import { LEGAL_DOCS } from "@/lib/kcn/legal-copy";
 import { nowStamp, useKcn } from "@/lib/kcn/store";
+import { BootSequence } from "./boot-sequence";
+import { LegalDesk } from "./legal-desk";
 import { ScannerSheet } from "./scanner-sheet";
 import { Seal } from "./seal";
 import { Starfield } from "./starfield";
-import { BootSequence } from "./boot-sequence";
 
 const MODULES: [string, string][] = [
   ["reader", "Reader"],
@@ -302,6 +302,7 @@ export function KcnConsole() {
               }}
             />
           </label>
+          <button className="kcn-btn" onClick={() => setMod("legal")}>Legal pack</button>
           <button className="kcn-btn" onClick={() => setScanOpen(true)}>Scan / look up</button>
           <label className="kcn-btn cyan">
             Add files
@@ -373,27 +374,6 @@ export function KcnConsole() {
       {toast ? <div className="kcn-toast">{toast}</div> : null}
       {!booted && <BootSequence onDone={() => setBooted(true)} />}
     </div>
-  );
-}
-
-function LegalDesk() {
-  const [tab, setTab] = useState(LEGAL_DOCS[0].id);
-  const active = LEGAL_DOCS.find((d) => d.id === tab) ?? LEGAL_DOCS[0];
-  return (
-    <section>
-      <h2 className="kcn-title">License & Legal</h2>
-      <p className="kcn-muted mb-4">
-        These terms govern KCN-II. They are software agreements, not legal advice. Human review is required.
-      </p>
-      <div className="mb-3 flex flex-wrap gap-2">
-        {LEGAL_DOCS.map((d) => (
-          <button key={d.id} className={`kcn-chip ${tab === d.id ? "on" : ""}`} onClick={() => setTab(d.id)} type="button">
-            {d.title}
-          </button>
-        ))}
-      </div>
-      <pre className="kcn-card max-h-[55vh] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">{active.body}</pre>
-    </section>
   );
 }
 
