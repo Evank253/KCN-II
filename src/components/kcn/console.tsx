@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, Component, type ReactNode } from "react";
 import { classifyText } from "@/lib/kcn/classify";
 import { askCase } from "@/lib/kcn/assist";
 import { caseDigest } from "@/lib/kcn/intel";
 import { useKcn } from "@/lib/kcn/store";
-import { currentPayload, IDLE_MS, isUnlocked, lockVault, recordAudit, sealedBackup } from "@/lib/kcn/vault";
+import { currentPayload, IDLE_MS, currentInvestigatorId, isUnlocked, lockVault, recordAudit, sealedBackup } from "@/lib/kcn/vault";
+import { easyKey } from "@/lib/kcn/accounts";
+import { parseIntent, intentLabel } from "@/lib/kcn/controller";
 import { downloadText } from "@/lib/kcn/legal-copy";
+import { useCurrentUserState } from "@/lib/auth/use-current-user";
+import { RedirectToSignIn, UserButton } from "@/lib/auth/gates";
+import { signOut } from "@/lib/auth/client";
 import { BootSequence } from "./boot-sequence";
 import { CertificationDesk } from "./certification-desk";
 import {
@@ -17,6 +22,7 @@ import {
   OrgDesk,
   ReportDesk,
   ResolveDesk,
+  SearchDesk,
   SwarmDesk,
   VerifyDesk,
 } from "./desks";
@@ -28,13 +34,17 @@ import { VaultGate } from "./vault-gate";
 
 const NAV: { section: string; items: [string, string][] }[] = [
   {
+    section: "Start",
+    items: [["home", "Start"]],
+  },
+  {
     section: "Collect",
     items: [
-      ["scanner", "Scan and look up"],
-      ["reader", "Reader"],
+      ["scanner", "Scan"],
+      ["reader", "Files"],
       ["interview", "Interview"],
       ["video", "Video"],
-      ["swarm", "OSINT swarm"],
+      ["swarm", "Web search"],
     ],
   },
   {
@@ -43,51 +53,62 @@ const NAV: { section: string; items: [string, string][] }[] = [
       ["cases", "Cases"],
       ["people", "People"],
       ["orgs", "Organizations"],
-      ["locations", "Locations"],
+      ["locations", "Places"],
       ["notes", "Notes"],
     ],
   },
   {
     section: "Analyze",
     items: [
-      ["conversation", "Assistant"],
-      ["investigator", "AI swarm"],
-      ["resolve", "Entity resolution"],
-      ["relmap", "Relationships"],
+      ["conversation", "Ask"],
+      ["investigator", "Case brief"],
+      ["resolve", "Match names"],
+      ["relmap", "Links"],
       ["timeline", "Timeline"],
-      ["contradict", "Contradictions"],
+      ["contradict", "Conflicts"],
     ],
   },
   {
     section: "Preserve",
     items: [
       ["evidence", "Evidence"],
-      ["acquire", "Acquisition"],
-      ["custody", "Chain of custody"],
+      ["acquire", "Hashes"],
+      ["custody", "Custody"],
       ["findings", "Findings"],
-      ["verify", "Human verification"],
+      ["verify", "Review"],
     ],
   },
   {
     section: "Output",
     items: [
-      ["report", "Investigative report"],
-      ["intel", "Case intelligence"],
+      ["report", "Report"],
+      ["intel", "Overview"],
       ["activity", "Activity"],
     ],
   },
   {
     section: "System",
     items: [
-      ["vault", "Vault & certification"],
-      ["legal", "License & legal"],
+      ["vault", "Vault"],
+      ["legal", "Legal"],
     ],
   },
 ];
 
+const OPEN_DEFAULT: Record<string, boolean> = {
+  Start: true,
+  Collect: true,
+  Case: true,
+  Analyze: false,
+  Preserve: false,
+  Output: false,
+  System: false,
+};
+
 export function KcnConsole() {
   const store = useKcn();
-  const [mod, setMod] = useState("scanner");
+  const { user, isPending } = useCurrentUserState();
+  const [mod, setMod] = useState("home");
   const [scanOpen, setScanOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [clock, setClock] = useState("");
@@ -96,13 +117,36 @@ export function KcnConsole() {
   const [booted, setBooted] = useState(false);
   const [vaultOpen, setVaultOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [navQ, setNavQ] = useState("");
+  const [openSec, setOpenSec] = useState<Record<string, boolean>>(() => ({ ...OPEN_DEFAULT }));
+  const [coach, setCoach] = useState(true);
   const lastAct = useRef(Date.now());
 
   useEffect(() => {
     const t = setInterval(() => setClock(new Date().toLocaleString()), 1000);
     setClock(new Date().toLocaleString());
-    return () => clearInterval(t);
+    try {
+      /* coach is per investigator — set on vault open */
+    } catch {
+      /* private mode */
+    }
+    const hush = (e: Event) => {
+      e.preventDefault();
+    };
+    window.addEventListener("error", hush);
+    window.addEventListener("unhandledrejection", hush);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("error", hush);
+      window.removeEventListener("unhandledrejection", hush);
+    };
   }, []);
+
+  useEffect(() => {
+    const g = NAV.find((s) => s.items.some(([k]) => k === mod));
+    if (g) setOpenSec((prev) => ({ ...prev, [g.section]: true }));
+  }, [mod]);
 
   useEffect(() => {
     if (!vaultOpen) return;
@@ -132,6 +176,21 @@ export function KcnConsole() {
     setTimeout(() => setToast(""), 2200);
   }
 
+  function go(desk: string) {
+    setMod(desk);
+    setMoreOpen(false);
+  }
+
+  function dismissCoach() {
+    setCoach(false);
+    try {
+      const id = currentInvestigatorId();
+      if (id) localStorage.setItem(easyKey(id), "1");
+    } catch {
+      /* private mode */
+    }
+  }
+
   function analyze(q: string) {
     const packed = classifyText((store.reading || "") + "\n" + q);
     return [
@@ -149,6 +208,65 @@ export function KcnConsole() {
     const text = q.trim();
     if (!text) return;
     setAsk("");
+    let intent = parseIntent(text);
+    if (intent.kind === "ask" && mod === "swarm" && !/[?]/.test(text)) {
+      intent = { kind: "search", query: text };
+    }
+    if (intent.kind === "search") {
+      store.requestSearch(intent.query);
+      go("swarm");
+      setCmdOpen(false);
+      store.addChat(text, "Controller tasked the swarm to search: " + intent.query);
+      ping("Controller is searching that now.");
+      return;
+    }
+    if (intent.kind === "add-person") {
+      store.addPerson(intent.name, intent.role);
+      go("people");
+      setCmdOpen(false);
+      store.addChat(text, "Controller filed " + intent.name + " on People. Isolated to this investigator.");
+      ping(intentLabel(intent));
+      return;
+    }
+    if (intent.kind === "add-place") {
+      store.addPlace(intent.name);
+      go("locations");
+      setCmdOpen(false);
+      store.addChat(text, "Controller filed place: " + intent.name);
+      ping(intentLabel(intent));
+      return;
+    }
+    if (intent.kind === "add-org") {
+      store.addOrg(intent.name);
+      go("orgs");
+      setCmdOpen(false);
+      store.addChat(text, "Controller filed organization: " + intent.name);
+      ping(intentLabel(intent));
+      return;
+    }
+    if (intent.kind === "add-note") {
+      store.addNote(intent.text);
+      go("notes");
+      setCmdOpen(false);
+      store.addChat(text, "Controller filed the note.");
+      ping(intentLabel(intent));
+      return;
+    }
+    if (intent.kind === "add-finding") {
+      store.addFinding(intent.text);
+      go("findings");
+      setCmdOpen(false);
+      store.addChat(text, "Controller filed the finding.");
+      ping(intentLabel(intent));
+      return;
+    }
+    if (intent.kind === "open-desk") {
+      go(intent.desk);
+      if (intent.desk === "scanner") setScanOpen(true);
+      setCmdOpen(false);
+      ping(intentLabel(intent));
+      return;
+    }
     setMod("conversation");
     ping("Working the question…");
     void (async () => {
@@ -164,46 +282,69 @@ export function KcnConsole() {
 
   async function ingestFiles(files: FileList | File[]) {
     for (const f of [...files]) {
-      if ((f.type || "").startsWith("image/")) {
-        setScanOpen(true);
-        ping("Open the scanner to look this photo up.");
-        continue;
+      try {
+        if ((f.type || "").startsWith("image/")) {
+          setScanOpen(true);
+          ping("Open the scanner to look this photo up.");
+          continue;
+        }
+        if ((f.type || "").startsWith("audio/")) {
+          store.addEvidence(f.name, "audio");
+          const bytes = new Uint8Array(await f.arrayBuffer());
+          void store.stampIngest(bytes, f.name, "audio-upload").catch(() => undefined);
+          ping("Audio filed as evidence. Use Interview to transcribe spoken statements.");
+          continue;
+        }
+        if ((f.type || "").startsWith("video/")) {
+          store.addEvidence(f.name, "video");
+          const bytes = new Uint8Array(await f.arrayBuffer());
+          void store.stampIngest(bytes, f.name, "video-upload").catch(() => undefined);
+          ping("Video filed as evidence. Add notes from what you observe.");
+          continue;
+        }
+        const text = await f.text();
+        store.fileExtraction(text, f.name);
+        void store.stampIngest(text, f.name, "file-upload").catch(() => undefined);
+      } catch {
+        ping("Could not read " + (f.name || "that file") + ".");
       }
-      if ((f.type || "").startsWith("audio/")) {
-        store.addEvidence(f.name, "audio");
-        const bytes = new Uint8Array(await f.arrayBuffer());
-        void store.stampIngest(bytes, f.name, "audio-upload");
-        ping("Audio filed as evidence. Use Interview to transcribe spoken statements.");
-        continue;
-      }
-      if ((f.type || "").startsWith("video/")) {
-        store.addEvidence(f.name, "video");
-        const bytes = new Uint8Array(await f.arrayBuffer());
-        void store.stampIngest(bytes, f.name, "video-upload");
-        ping("Video filed as evidence. Add notes from what you observe.");
-        continue;
-      }
-      const text = await f.text();
-      store.fileExtraction(text, f.name);
-      void store.stampIngest(text, f.name, "file-upload");
     }
     ping("Sources locked into the case file.");
   }
 
   function lockNow(msg?: string) {
+    try {
+      store.persist();
+    } catch {
+      /* still lock */
+    }
     lockVault();
     store.lockMemory();
     setVaultOpen(false);
+    setMod("home");
+    setCmdOpen(false);
+    setScanOpen(false);
+    setMoreOpen(false);
+    setAsk("");
+    setCoach(true);
     ping(msg || "Vault locked. Case files are sealed.");
   }
 
   function openVault() {
     const p = currentPayload();
     if (p) store.hydrateFrom(p.case);
+    try {
+      const id = currentInvestigatorId();
+      setCoach(!(id && localStorage.getItem(easyKey(id)) === "1"));
+    } catch {
+      setCoach(true);
+    }
+    setMod("home");
+    setCmdOpen(false);
     setVaultOpen(true);
     lastAct.current = Date.now();
-    ping("Vault open. Files are encrypted at rest.");
-    void recordAudit("CONSOLE_OPEN");
+    ping("Vault open for " + (p?.meta.operatorName || p?.case.operator || user?.displayName || "this investigator") + ". Isolated to this account.");
+    void recordAudit("CONSOLE_OPEN").catch(() => undefined);
   }
 
   function saveCase() {
@@ -213,7 +354,7 @@ export function KcnConsole() {
     }
     try {
       downloadText("KCN-II-sealed-vault.json", sealedBackup());
-      void recordAudit("SEALED_BACKUP_EXPORTED");
+      void recordAudit("SEALED_BACKUP_EXPORTED").catch(() => undefined);
       ping("Sealed vault downloaded. Still needs the passphrase.");
     } catch {
       ping("Nothing sealed to export.");
@@ -221,37 +362,60 @@ export function KcnConsole() {
   }
 
   const view = useMemo(() => {
+    if (mod === "home") {
+      return (
+        <HomeDesk
+          coach={coach}
+          onDismissCoach={dismissCoach}
+          counts={{
+            people: store.people.length,
+            files: store.files.length,
+            findings: store.findings.length,
+            scans: store.scans.length + store.lookups.length,
+          }}
+          onScan={() => {
+            setMod("scanner");
+            setScanOpen(true);
+          }}
+          onFiles={() => go("reader")}
+          onPeople={() => go("people")}
+          onAsk={() => {
+            go("conversation");
+            setCmdOpen(true);
+          }}
+          onGo={go}
+        />
+      );
+    }
     if (mod === "scanner") {
       return (
         <section>
-          <h2 className="kcn-title">Scan and look up</h2>
-          <p className="kcn-muted mb-4">
-            This is both a document scanner and a photo lookup desk. Take a picture of a page, a person, a place, or anything in front of you. Then say what you want: look it up, file it, identify names, or search public sources.
-          </p>
+          <h2 className="kcn-title">Scan</h2>
+          <p className="kcn-hint">Photo a page or anything in front of you. Then say what you want done.</p>
           <div className="mb-4 flex flex-wrap gap-2">
-            <button className="kcn-btn cyan" onClick={() => setScanOpen(true)}>
+            <button className="kcn-btn gold" onClick={() => setScanOpen(true)}>
               Open camera
             </button>
-            <button className="kcn-btn gold" onClick={() => setScanOpen(true)}>
-              Upload a photo
+            <button className="kcn-btn cyan" onClick={() => setScanOpen(true)}>
+              Use a photo
             </button>
           </div>
           <div className="flex flex-col gap-2">
             {store.lookups.length === 0 && store.scans.length === 0 && (
-              <div className="kcn-muted">No captures yet. Open the camera and tell KCN-II what to do.</div>
+              <div className="kcn-empty">Nothing scanned yet. Open the camera or pick a photo.</div>
             )}
             {store.lookups.map((l) => (
               <div key={l.id} className="kcn-item">
                 <b>{l.instruction}</b>
                 <div className="kcn-tiny kcn-muted">{l.at}</div>
-                <pre className="mt-2 whitespace-pre-wrap font-mono text-xs">{l.briefing.slice(0, 500)}</pre>
+                <pre className="mt-2 whitespace-pre-wrap font-mono text-xs">{(l.briefing || "").slice(0, 500)}</pre>
               </div>
             ))}
             {store.scans.map((s, i) => (
               <div key={i} className="kcn-item">
                 <b>{s.title}</b>
                 <div className="kcn-tiny kcn-muted">
-                  {s.at} • {s.instruction} • {s.names} names • {s.locations} locations
+                  {s.at} • {s.instruction} • {s.names} names • {s.locations} places
                 </div>
               </div>
             ))}
@@ -262,15 +426,27 @@ export function KcnConsole() {
     if (mod === "reader") {
       return (
         <section>
-          <h2 className="kcn-title">Upload a file</h2>
+          <h2 className="kcn-title">Files</h2>
+          <p className="kcn-hint">Add a document or paste text. Photos belong in Scan.</p>
+          <label className="kcn-btn cyan mb-3 inline-flex">
+            Add files
+            <input
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files) void ingestFiles(e.target.files);
+              }}
+            />
+          </label>
           <textarea
             value={store.reading}
             onChange={(e) => store.setReading(e.target.value)}
-            placeholder="Your extracted reading appears here..."
+            placeholder="Paste or extracted text appears here"
             className="min-h-[220px]"
           />
           <div className="kcn-tiny kcn-muted mt-2">
-            {store.files.map((f) => f.name).join(" • ") || "No sources loaded."}
+            {store.files.map((f) => f.name).join(" • ") || "No files yet."}
           </div>
         </section>
       );
@@ -278,21 +454,25 @@ export function KcnConsole() {
     if (mod === "conversation") {
       return (
         <section>
-          <h2 className="kcn-title">Conversation</h2>
+          <h2 className="kcn-title">Ask</h2>
+          <p className="kcn-hint">
+            The controller does what you asked. Search a name, add a person, or question this case.
+          </p>
           <div className="kcn-card mb-3 min-h-48">
             {store.chat.map((m, i) => (
               <div key={i} className="kcn-item mb-2">
-                <b>{m.role === "you" ? "OPERATOR" : "KCN-II"}</b>
+                <b>{m.role === "you" ? "YOU" : "KCN-II"}</b>
                 <div className="kcn-tiny whitespace-pre-wrap">{m.text}</div>
               </div>
             ))}
-            {store.chat.length === 0 && <div className="kcn-muted">Ask from the command bar, or look a photo up.</div>}
+            {store.chat.length === 0 && <div className="kcn-empty">No questions yet. Type below.</div>}
           </div>
+          <AskPad onSubmit={sendAsk} />
         </section>
       );
     }
     if (mod === "notes") {
-      return <ListForm title="Research Notes" placeholder="Add an investigative note" onAdd={(t) => store.addNote(t)} items={store.notes.map((n) => ({ t: n.t, s: n.at }))} />;
+      return <ListForm title="Notes" hint="Quick facts, hunches, and follow-ups." placeholder="Add a note" onAdd={(t) => store.addNote(t)} items={store.notes.map((n) => ({ t: n.t, s: n.at }))} />;
     }
     if (mod === "cases") {
       return <CasesDesk />;
@@ -301,6 +481,7 @@ export function KcnConsole() {
       return (
         <TwoField
           title="People"
+          hint="Add a name. Role is optional."
           a="Name"
           b="Role / org"
           onAdd={(a, b) => store.addPerson(a, b)}
@@ -309,29 +490,25 @@ export function KcnConsole() {
       );
     }
     if (mod === "locations") {
-      return <ListForm title="Locations" placeholder="Place, address, city, scene" onAdd={(t) => store.addPlace(t)} items={store.locations.map((l) => ({ t: l.name, s: l.source }))} />;
+      return <ListForm title="Places" hint="Addresses, cities, scenes." placeholder="Place, address, city, scene" onAdd={(t) => store.addPlace(t)} items={store.locations.map((l) => ({ t: l.name, s: l.source }))} />;
     }
     if (mod === "findings") {
-      return <ListForm title="Findings" placeholder="Finding, lead, contradiction, conclusion to review" onAdd={(t) => store.addFinding(t)} items={store.findings.map((f) => ({ t: f.t, s: `${f.verify || "generated"} · ${f.source}` }))} />;
+      return <ListForm title="Findings" hint="Leads to review. Not conclusions." placeholder="Finding or lead" onAdd={(t) => store.addFinding(t)} items={store.findings.map((f) => ({ t: f.t, s: `${f.verify || "generated"} · ${f.source}` }))} />;
     }
     if (mod === "evidence") {
-      return <ListForm title="Forensic Evidence" placeholder="Evidence title" onAdd={(t) => store.addEvidence(t, "document")} items={store.evidence.map((e) => ({ t: e.title, s: e.type }))} />;
+      return <ListForm title="Evidence" hint="What you have in hand." placeholder="Evidence title" onAdd={(t) => store.addEvidence(t, "document")} items={store.evidence.map((e) => ({ t: e.title, s: e.type }))} />;
     }
     if (mod === "timeline") {
-      return <ListForm title="Timeline" placeholder="Event" onAdd={(t) => store.addEvent("", t)} items={store.events.map((e) => ({ t: e.what, s: String(e.when) }))} />;
+      return <ListForm title="Timeline" hint="What happened, in order." placeholder="Event" onAdd={(t) => store.addEvent("", t)} items={store.events.map((e) => ({ t: e.what, s: String(e.when) }))} />;
     }
     if (mod === "swarm") {
-      return (
-        <section>
-          <h2 className="kcn-title">Web Browser Swarm</h2>
-          <SwarmBox onGo={(q) => store.addSwarm(q)} log={store.swarmLog} />
-        </section>
-      );
+      return <SearchDesk />;
     }
     if (mod === "video") {
       return (
         <section>
-          <h2 className="kcn-title">Video Link Evidence</h2>
+          <h2 className="kcn-title">Video</h2>
+          <p className="kcn-hint">Paste a public video link to file it.</p>
           <VideoBox url={store.video} onLock={(u) => { store.setVideo(u); store.addEvidence("Linked video", "video"); }} />
         </section>
       );
@@ -369,7 +546,8 @@ export function KcnConsole() {
     if (mod === "relmap") {
       return (
         <section>
-          <h2 className="kcn-title">Relationship Map</h2>
+          <h2 className="kcn-title">Links</h2>
+          <p className="kcn-hint">Who is connected to whom.</p>
           <RelationBox />
         </section>
       );
@@ -384,39 +562,68 @@ export function KcnConsole() {
           onWiped={() => {
             store.lockMemory();
             setVaultOpen(false);
-            ping("This device was wiped.");
+            setMod("home");
+            ping("This account's vault was wiped. Other signed-in accounts were not touched.");
           }}
         />
       );
     }
     return (
       <section>
-        <h2 className="kcn-title">Case Intelligence</h2>
+        <h2 className="kcn-title">Overview</h2>
+        <p className="kcn-hint">Counts only. Open Start if you want the next step.</p>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           {[
-            ["OPEN CASES", store.cases.length],
-            ["PEOPLE", store.people.length],
-            ["LOCATIONS", store.locations.length],
-            ["FINDINGS", store.findings.length],
-            ["LOOKUPS", store.lookups.length],
-            ["SCANS", store.scans.length],
-            ["EVIDENCE", store.evidence.length],
-            ["SOURCES", store.files.length],
-            ["CUSTODY", store.custody.length],
-            ["ACQUISITIONS", store.acquisitions.length],
-          ].map(([k, v]) => (
-            <div key={String(k)} className="kcn-card">
+            ["CASES", store.cases.length, "cases"],
+            ["PEOPLE", store.people.length, "people"],
+            ["PLACES", store.locations.length, "locations"],
+            ["FINDINGS", store.findings.length, "findings"],
+            ["LOOKUPS", store.lookups.length, "scanner"],
+            ["SCANS", store.scans.length, "scanner"],
+            ["EVIDENCE", store.evidence.length, "evidence"],
+            ["FILES", store.files.length, "reader"],
+            ["CUSTODY", store.custody.length, "custody"],
+            ["HASHES", store.acquisitions.length, "acquire"],
+          ].map(([k, v, desk]) => (
+            <button key={String(k)} className="kcn-card text-left" type="button" onClick={() => go(String(desk))}>
               <div className="text-gold-2 tracking-[0.12em]">{k}</div>
               <div className="text-4xl">{v}</div>
-            </div>
+            </button>
           ))}
         </div>
       </section>
     );
-  }, [mod, store]);
+  }, [mod, store, coach]);
+
+  if (!booted) {
+    return <BootSequence onDone={() => setBooted(true)} />;
+  }
+  if (isPending) {
+    return (
+      <div className="kcn-boot" aria-label="Confirming operator identity">
+        <Starfield />
+        <div className="kcn-boot-stage">
+          <p className="kcn-boot-sub">CONFIRMING OPERATOR IDENTITY</p>
+        </div>
+      </div>
+    );
+  }
+  if (!user) {
+    return <RedirectToSignIn />;
+  }
+  if (!vaultOpen) {
+    return (
+      <VaultGate
+        onOpen={openVault}
+        userId={user.id}
+        operatorName={user.displayName || user.primaryEmail?.split("@")[0] || "Investigator"}
+        email={user.primaryEmail || user.displayName || "signed-in operator"}
+      />
+    );
+  }
 
   return (
-    <div className={`kcn-app ${cmdOpen ? "cmd-open" : ""}`}>
+    <div className={`kcn-app ${cmdOpen ? "cmd-open" : ""}`} data-investigator={store.operator || ""}>
       <Starfield />
       <div className="kcn-ribbon">KCN-II // INVESTIGATOR SENSITIVE // SEALED VAULT • HUMAN REVIEW REQUIRED</div>
       <header className="kcn-appbar">
@@ -426,55 +633,73 @@ export function KcnConsole() {
             <h1>
               KCN-<span>II</span>
             </h1>
-            <p>CASE INTELLIGENCE • SEALED VAULT • HUMAN REVIEW</p>
+            <p>CASE INTELLIGENCE • {store.operator || user.primaryEmail || "SEALED VAULT"}</p>
           </div>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className={`kcn-pill ${vaultOpen ? "live" : ""}`}>{vaultOpen ? "VAULT OPEN" : "VAULT SEALED"}</div>
-          <div className="kcn-pill">{clock}</div>
-          <div className="kcn-pill">{savedAt}</div>
-          <button className="kcn-btn" onClick={saveCase}>Export sealed</button>
+          <div className={`kcn-pill ${vaultOpen ? "live" : ""}`}>{vaultOpen ? "OPEN" : "LOCKED"}</div>
+          <div className="kcn-pill">{user.primaryEmail || store.operator || "Investigator"}</div>
+          <div className="kcn-userchip">
+            <UserButton />
+          </div>
+          <div className="kcn-appbar-desk">
+            <div className="kcn-pill">{clock}</div>
+            <div className="kcn-pill">{savedAt}</div>
+            <button className="kcn-btn" onClick={saveCase}>Export</button>
+            <button className="kcn-btn" onClick={() => go("vault")}>Vault</button>
+            <button className="kcn-btn" onClick={() => setScanOpen(true)}>Scan</button>
+            <label className="kcn-btn cyan">
+              Add files
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) void ingestFiles(e.target.files);
+                }}
+              />
+            </label>
+          </div>
+          <button
+            className="kcn-btn"
+            aria-label="Switch account"
+            onClick={() => {
+              lockNow("Signed out. That case stays in this email's vault.");
+              void signOut("/login").catch(() => ping("Sign out did not finish. Try again."));
+            }}
+          >
+            Switch account
+          </button>
           <button className="kcn-btn" onClick={() => lockNow()}>Lock</button>
-          <button className="kcn-btn" onClick={() => setMod("vault")}>Certification</button>
-          <button className="kcn-btn" onClick={() => setScanOpen(true)}>Scan / look up</button>
-          <label className="kcn-btn cyan">
-            Add files
-            <input
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) void ingestFiles(e.target.files);
-              }}
-            />
-          </label>
         </div>
       </header>
       <div className="kcn-shell">
         <aside className="kcn-aside">
-          <div className="px-2 text-[10px] tracking-[0.28em] text-cyan">OPERATIONS CONSOLE</div>
-          <div className="px-2 pb-3 text-xl">Investigation Workspace</div>
-          {NAV.map((group) => (
-            <div key={group.section} className="kcn-nav-group">
-              <div className="kcn-nav-label">{group.section}</div>
-              {group.items.map(([key, label]) => (
-                <button
-                  key={key}
-                  className={`kcn-nav ${mod === key ? "active" : ""}`}
-                  onClick={() => setMod(key)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          ))}
+          <div className="px-2 text-[10px] tracking-[0.28em] text-cyan">OPERATIONS</div>
+          <div className="px-2 pb-2 text-xl">Desks</div>
+          <input
+            className="kcn-nav-search"
+            value={navQ}
+            onChange={(e) => setNavQ(e.target.value)}
+            placeholder="Find a desk"
+            aria-label="Find a desk"
+          />
+          <NavList
+            mod={mod}
+            query={navQ}
+            openSec={openSec}
+            onToggle={(section) => setOpenSec((prev) => ({ ...prev, [section]: !prev[section] }))}
+            onPick={(key) => go(key)}
+          />
         </aside>
         <main className="kcn-workspace">
           <div className="kcn-ws-top">
-            <div>SEALED WORKSPACE • KCN-II INVESTIGATOR VAULT</div>
-            <div>AES-256-GCM • SOURCE-AWARE • HUMAN REVIEW REQUIRED</div>
+            <div>START WITH A PHOTO, A FILE, OR A NAME</div>
+            <div>HUMAN REVIEW REQUIRED</div>
           </div>
-          <div className="kcn-body">{view}</div>
+          <div className="kcn-body">
+            <DeskGuard>{view}</DeskGuard>
+          </div>
         </main>
       </div>
       {cmdOpen ? (
@@ -486,26 +711,16 @@ export function KcnConsole() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") sendAsk(ask);
               }}
-              placeholder="Ask about the case — optional"
+              placeholder="Search a name, add a person, or ask the case"
+              autoFocus
             />
             <button className="kcn-btn gold" onClick={() => sendAsk(ask)}>
               Ask
             </button>
           </div>
           <div className="flex flex-wrap justify-end gap-2">
-            <label className="kcn-btn">
-              Upload files
-              <input
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files) void ingestFiles(e.target.files);
-                }}
-              />
-            </label>
             <button className="kcn-btn cyan" onClick={() => setScanOpen(true)}>
-              Scan / look up
+              Scan
             </button>
             <button className="kcn-btn" onClick={() => setCmdOpen(false)}>
               Hide
@@ -514,42 +729,280 @@ export function KcnConsole() {
         </div>
       ) : (
         <button className="kcn-cmd-fab" type="button" onClick={() => setCmdOpen(true)}>
-          Quick Investigator
+          Ask
         </button>
       )}
-      <ScannerSheet open={scanOpen && vaultOpen} onClose={() => setScanOpen(false)} toast={ping} />
+      <nav className="kcn-dock" aria-label="Main">
+        <button type="button" className={mod === "home" ? "on" : ""} onClick={() => go("home")}>
+          Start
+        </button>
+        <button
+          type="button"
+          className={mod === "scanner" ? "on" : ""}
+          onClick={() => {
+            go("scanner");
+            setScanOpen(true);
+          }}
+        >
+          Scan
+        </button>
+        <button type="button" className={mod === "reader" ? "on" : ""} onClick={() => go("reader")}>
+          Files
+        </button>
+        <button type="button" className={mod === "people" ? "on" : ""} onClick={() => go("people")}>
+          People
+        </button>
+        <button type="button" className={moreOpen ? "on" : ""} onClick={() => setMoreOpen(true)}>
+          More
+        </button>
+      </nav>
+      {moreOpen ? (
+        <div className="kcn-sheet" onClick={() => setMoreOpen(false)}>
+          <div className="kcn-sheet-card kcn-more-card" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="kcn-title mb-0">All desks</h2>
+              <button className="kcn-btn" type="button" onClick={() => setMoreOpen(false)}>
+                Close
+              </button>
+            </div>
+            <input
+              className="kcn-nav-search mb-3"
+              value={navQ}
+              onChange={(e) => setNavQ(e.target.value)}
+              placeholder="Search desks"
+              aria-label="Search desks"
+            />
+            <NavList
+              mod={mod}
+              query={navQ}
+              openSec={openSec}
+              onToggle={(section) => setOpenSec((prev) => ({ ...prev, [section]: true }))}
+              onPick={(key) => go(key)}
+            />
+          </div>
+        </div>
+      ) : null}
+      <ScannerSheet open={scanOpen} onClose={() => setScanOpen(false)} toast={ping} />
       {toast ? <div className="kcn-toast">{toast}</div> : null}
-      {!booted && <BootSequence onDone={() => setBooted(true)} />}
-      {booted && !vaultOpen && <VaultGate onOpen={openVault} />}
+    </div>
+  );
+}
+
+function DeskGuard({ children }: { children: ReactNode }) {
+  return <DeskGuardInner>{children}</DeskGuardInner>;
+}
+
+class DeskGuardInner extends Component<{ children: ReactNode }, { err: string | null }> {
+  state: { err: string | null } = { err: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { err: error.message || "Desk failed." };
+  }
+
+  componentDidCatch() {
+    /* keep the vault up; do not log */
+  }
+
+  render() {
+    if (this.state.err) {
+      return (
+        <section>
+          <h2 className="kcn-title">This desk hit a problem</h2>
+          <p className="kcn-hint">The vault is still sealed. Switch desks or retry. Nothing was sent off this device.</p>
+          <p className="kcn-tiny kcn-muted mb-3">{this.state.err}</p>
+          <button className="kcn-btn gold" type="button" onClick={() => this.setState({ err: null })}>
+            Retry
+          </button>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function NavList({
+  mod,
+  query,
+  openSec,
+  onToggle,
+  onPick,
+}: {
+  mod: string;
+  query: string;
+  openSec: Record<string, boolean>;
+  onToggle: (section: string) => void;
+  onPick: (key: string) => void;
+}) {
+  const q = query.trim().toLowerCase();
+  return (
+    <>
+      {NAV.map((group) => {
+        const items = q
+          ? group.items.filter(
+              ([, label]) =>
+                label.toLowerCase().includes(q) || group.section.toLowerCase().includes(q),
+            )
+          : group.items;
+        if (q && items.length === 0) return null;
+        const open = Boolean(q) || Boolean(openSec[group.section]);
+        return (
+          <div key={group.section} className="kcn-nav-group">
+            <button type="button" className="kcn-nav-label" onClick={() => onToggle(group.section)}>
+              {group.section}
+              <span>{open ? "–" : "+"}</span>
+            </button>
+            {open &&
+              items.map(([key, label]) => (
+                <button
+                  key={key}
+                  className={`kcn-nav ${mod === key ? "active" : ""}`}
+                  onClick={() => onPick(key)}
+                >
+                  {label}
+                </button>
+              ))}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function HomeDesk({
+  coach,
+  onDismissCoach,
+  counts,
+  onScan,
+  onFiles,
+  onPeople,
+  onAsk,
+  onGo,
+}: {
+  coach: boolean;
+  onDismissCoach: () => void;
+  counts: { people: number; files: number; findings: number; scans: number };
+  onScan: () => void;
+  onFiles: () => void;
+  onPeople: () => void;
+  onAsk: () => void;
+  onGo: (k: string) => void;
+}) {
+  return (
+    <section>
+      <h2 className="kcn-title">Start</h2>
+      <p className="kcn-hint">Three moves. Photo or file. Names. Then ask.</p>
+      {coach ? (
+        <div className="kcn-coach">
+          <p>You do not need every desk. Scan something, add who it is about, then ask. Sign out to keep this case in your account only.</p>
+          <button className="kcn-btn gold" type="button" onClick={onDismissCoach}>
+            Got it
+          </button>
+        </div>
+      ) : null}
+      <div className="kcn-home-grid">
+        <button className="kcn-action primary" type="button" onClick={onScan}>
+          <b>Scan</b>
+          <span>Photo a page or a face. Then say what to do.</span>
+        </button>
+        <button className="kcn-action" type="button" onClick={onFiles}>
+          <b>Files</b>
+          <span>Add a document or paste text.</span>
+        </button>
+        <button className="kcn-action" type="button" onClick={onPeople}>
+          <b>People</b>
+          <span>Put a name on the board.</span>
+        </button>
+        <button className="kcn-action" type="button" onClick={onAsk}>
+          <b>Ask</b>
+          <span>Search a name, add a person, or question the case.</span>
+        </button>
+      </div>
+      <div className="kcn-home-stats">
+        {[
+          ["Scans", counts.scans, "scanner"],
+          ["Files", counts.files, "reader"],
+          ["People", counts.people, "people"],
+          ["Findings", counts.findings, "findings"],
+        ].map(([label, n, desk]) => (
+          <button key={String(label)} className="kcn-stat" type="button" onClick={() => onGo(String(desk))}>
+            <b>{n}</b>
+            <span>{label}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AskPad({ onSubmit }: { onSubmit: (q: string) => void }) {
+  const [v, setV] = useState("");
+  return (
+    <div className="flex flex-wrap gap-2">
+      <input
+        className="kcn-field flex-1"
+        value={v}
+        onChange={(e) => setV(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            const t = v.trim();
+            if (!t) return;
+            setV("");
+            onSubmit(t);
+          }
+        }}
+        placeholder="search Jane Doe  ·  add person Marcus Hale  ·  what is on the board"
+        aria-label="Ask the controller"
+      />
+      <button
+        className="kcn-btn gold"
+        type="button"
+        onClick={() => {
+          const t = v.trim();
+          if (!t) return;
+          setV("");
+          onSubmit(t);
+        }}
+      >
+        Send
+      </button>
     </div>
   );
 }
 
 function ListForm({
   title,
+  hint,
   placeholder,
   onAdd,
   items,
 }: {
   title: string;
+  hint?: string;
   placeholder: string;
   onAdd: (t: string) => void;
   items: { t: string; s: string }[];
 }) {
   const [v, setV] = useState("");
+  function submit() {
+    if (!v.trim()) return;
+    onAdd(v.trim());
+    setV("");
+  }
   return (
     <section>
       <h2 className="kcn-title">{title}</h2>
+      {hint ? <p className="kcn-hint">{hint}</p> : null}
       <div className="mb-3 flex gap-2">
-        <input className="kcn-field flex-1" value={v} onChange={(e) => setV(e.target.value)} placeholder={placeholder} />
-        <button
-          className="kcn-btn gold"
-          onClick={() => {
-            if (!v.trim()) return;
-            onAdd(v.trim());
-            setV("");
+        <input
+          className="kcn-field flex-1"
+          value={v}
+          onChange={(e) => setV(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
           }}
-        >
+          placeholder={placeholder}
+        />
+        <button className="kcn-btn gold" onClick={submit}>
           Add
         </button>
       </div>
@@ -560,7 +1013,7 @@ function ListForm({
             <div className="kcn-tiny kcn-muted">{it.s}</div>
           </div>
         ))}
-        {items.length === 0 && <div className="kcn-muted">Nothing logged yet.</div>}
+        {items.length === 0 && <div className="kcn-empty">Nothing here yet. Type above and tap Add.</div>}
       </div>
     </section>
   );
@@ -568,12 +1021,14 @@ function ListForm({
 
 function TwoField({
   title,
+  hint,
   a,
   b,
   onAdd,
   items,
 }: {
   title: string;
+  hint?: string;
   a: string;
   b: string;
   onAdd: (a: string, b: string) => void;
@@ -581,21 +1036,36 @@ function TwoField({
 }) {
   const [x, setX] = useState("");
   const [y, setY] = useState("");
+  function submit() {
+    if (!x.trim()) return;
+    onAdd(x.trim(), y.trim());
+    setX("");
+    setY("");
+  }
   return (
     <section>
       <h2 className="kcn-title">{title}</h2>
+      {hint ? <p className="kcn-hint">{hint}</p> : null}
       <div className="mb-3 flex flex-wrap gap-2">
-        <input className="kcn-field" value={x} onChange={(e) => setX(e.target.value)} placeholder={a} />
-        <input className="kcn-field" value={y} onChange={(e) => setY(e.target.value)} placeholder={b} />
-        <button
-          className="kcn-btn gold"
-          onClick={() => {
-            if (!x.trim()) return;
-            onAdd(x.trim(), y.trim());
-            setX("");
-            setY("");
+        <input
+          className="kcn-field"
+          value={x}
+          onChange={(e) => setX(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
           }}
-        >
+          placeholder={a}
+        />
+        <input
+          className="kcn-field"
+          value={y}
+          onChange={(e) => setY(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+          placeholder={b}
+        />
+        <button className="kcn-btn gold" onClick={submit}>
           Add
         </button>
       </div>
@@ -606,53 +1076,21 @@ function TwoField({
             <div className="kcn-tiny kcn-muted">{it.s}</div>
           </div>
         ))}
+        {items.length === 0 && <div className="kcn-empty">No people yet. Add a name to start the board.</div>}
       </div>
     </section>
   );
 }
 
-function SwarmBox({
-  onGo,
-  log,
-}: {
-  onGo: (q: string) => void;
-  log: { q: string; at: string; engines: [string, string][] }[];
-}) {
-  const [q, setQ] = useState("");
-  return (
-    <>
-      <div className="mb-3 flex gap-2">
-        <input className="kcn-field flex-1" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Target query / subject / alias" />
-        <button
-          className="kcn-btn gold"
-          onClick={() => {
-            if (!q.trim()) return;
-            onGo(q.trim());
-            setQ("");
-          }}
-        >
-          Launch swarm
-        </button>
-      </div>
-      {log.map((s) => (
-        <div key={s.at + s.q} className="kcn-card mb-2">
-          <h3 className="text-gold-2">{s.q}</h3>
-          <div className="kcn-tiny kcn-muted">{s.at}</div>
-        </div>
-      ))}
-    </>
-  );
-}
-
 function VideoBox({ url, onLock }: { url: string; onLock: (u: string) => void }) {
   const [v, setV] = useState(url);
-  const yt = url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/);
+  const yt = typeof url === "string" ? url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/) : null;
   return (
     <>
       <div className="mb-3 flex gap-2">
         <input className="kcn-field flex-1" value={v} onChange={(e) => setV(e.target.value)} placeholder="Paste a public video URL" />
         <button className="kcn-btn cyan" onClick={() => onLock(v.trim())}>
-          Lock evidence
+          Save
         </button>
       </div>
       {yt ? (
@@ -705,7 +1143,7 @@ function RelationBox() {
             {r.a} {r.rel} {r.b}
           </div>
         ))}
-        {people.length === 0 && <div className="kcn-muted">Upload sources or add people to populate the graph.</div>}
+        {people.length === 0 && <div className="kcn-empty">Add people first, then link them.</div>}
       </div>
     </>
   );

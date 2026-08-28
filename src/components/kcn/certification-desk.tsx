@@ -9,14 +9,18 @@ export function CertificationDesk({ onLocked, onWiped }: Props) {
   const [cert, setCert] = useState<Certification | null>(null);
   const [busy, setBusy] = useState(false);
   const [wipe, setWipe] = useState(0);
+  const [note, setNote] = useState("");
   const payload = currentPayload();
 
   async function run() {
     setBusy(true);
+    setNote("");
     try {
       const next = await runCertification();
       setCert(next);
       if (isUnlocked()) await recordAudit("CERTIFICATION_RUN");
+    } catch {
+      setNote("Certification could not finish on this device.");
     } finally {
       setBusy(false);
     }
@@ -26,9 +30,9 @@ export function CertificationDesk({ onLocked, onWiped }: Props) {
     try {
       const blob = sealedBackup();
       downloadText("KCN-II-sealed-vault.json", blob);
-      void recordAudit("SEALED_BACKUP_EXPORTED");
+      void recordAudit("SEALED_BACKUP_EXPORTED").catch(() => undefined);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Export failed.");
+      setNote(e instanceof Error ? e.message : "Export failed.");
     }
   }
 
@@ -37,18 +41,23 @@ export function CertificationDesk({ onLocked, onWiped }: Props) {
       setWipe(wipe + 1);
       return;
     }
-    await wipeVault();
-    onWiped();
+    try {
+      await wipeVault();
+      onWiped();
+    } catch {
+      setNote("Wipe could not finish on this device.");
+      setWipe(0);
+    }
   }
 
   return (
     <section>
       <div className="kcn-legal-stamp">IDPC-1.0 • INVESTIGATOR DATA PROTECTION</div>
-      <h2 className="kcn-title">Vault and certification</h2>
-      <p className="kcn-muted mb-4">
-        Case files are sealed on this device with AES-256-GCM. Certification is a live control test with
-        cryptographic evidence — not a purchased ISO or SOC badge.
+      <h2 className="kcn-title">Vault</h2>
+      <p className="kcn-hint">
+        You do not need certification to work a case. Lock when you step away. Export is ciphertext only.
       </p>
+      {note ? <p className="kcn-tiny text-gold-2 mb-3">{note}</p> : null}
       <div className="kcn-legal-grid mb-4">
         <div className="kcn-legal-card on">
           <b>{isUnlocked() ? "VAULT OPEN" : "VAULT SEALED"}</b>
@@ -71,7 +80,7 @@ export function CertificationDesk({ onLocked, onWiped }: Props) {
           {busy ? "Testing controls…" : "Run certification"}
         </button>
         <button className="kcn-btn" onClick={exportVault}>
-          Download sealed vault
+          Export
         </button>
         {cert && (
           <button className="kcn-btn" onClick={() => downloadText("KCN-II-IDPC-evidence.txt", certificationText(cert))}>
@@ -82,7 +91,7 @@ export function CertificationDesk({ onLocked, onWiped }: Props) {
           Lock vault
         </button>
         <button className="kcn-btn" onClick={() => void confirmWipe()}>
-          {wipe === 0 ? "Wipe this device" : wipe === 1 ? "Tap again to confirm wipe" : "Last chance — wipe now"}
+          {wipe === 0 ? "Wipe this investigator" : wipe === 1 ? "Tap again to confirm wipe" : "Last chance — wipe this investigator now"}
         </button>
       </div>
       {cert && (

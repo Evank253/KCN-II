@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { downloadText } from "@/lib/kcn/legal-copy";
 import { VERIFY_FLOW, buildReport, findContradictions, resolveEntities, swarmBrief } from "@/lib/kcn/intel";
-import { nowStamp, useKcn, type VerifyStatus } from "@/lib/kcn/store";
+import { nowStamp, useKcn, type SearchEvent, type SwarmRun, type VerifyStatus } from "@/lib/kcn/store";
+import { liveGrokSearch, localPlan, planSwarm, probeSource, retaskSwarm, type AgentTask, type SwarmFocus } from "@/lib/kcn/deep-search";
 
 export function ResolveDesk() {
   const people = useKcn((s) => s.people);
@@ -11,7 +12,7 @@ export function ResolveDesk() {
   const hits = useMemo(() => resolveEntities(people), [people]);
   return (
     <section>
-      <h2 className="kcn-title">Entity resolution</h2>
+      <h2 className="kcn-title">Match names</h2>
       <p className="kcn-muted mb-3">
         Candidate matches only. John Smith and J. Smith can look related. The investigator decides.
       </p>
@@ -22,7 +23,7 @@ export function ResolveDesk() {
           mergeAliases(next);
         }}
       >
-        Run resolver
+        Run match
       </button>
       {(aliases.length ? aliases : hits).map((h) => (
         <div key={h.id} className="kcn-item mb-2">
@@ -54,7 +55,7 @@ export function ResolveDesk() {
           </div>
         </div>
       ))}
-      {hits.length === 0 && aliases.length === 0 && <div className="kcn-muted">Need at least two people on the board.</div>}
+      {hits.length === 0 && aliases.length === 0 && <div className="kcn-muted">Add at least two people, then run match.</div>}
     </section>
   );
 }
@@ -64,7 +65,7 @@ export function ContradictDesk() {
   const live = useMemo(() => findContradictions(store), [store.findings, store.notes, store.events]);
   return (
     <section>
-      <h2 className="kcn-title">Contradiction desk</h2>
+      <h2 className="kcn-title">Conflicts</h2>
       <p className="kcn-muted mb-3">Flags possible conflicts. It does not decide who is telling the truth.</p>
       <button className="kcn-btn gold mb-4" onClick={() => store.mergeContradictions(live)}>
         Scan for conflicts
@@ -107,7 +108,7 @@ export function VerifyDesk() {
   const setVerify = useKcn((s) => s.setVerify);
   return (
     <section>
-      <h2 className="kcn-title">Human verification</h2>
+      <h2 className="kcn-title">Review</h2>
       <p className="kcn-muted mb-3">
         Generated → unreviewed → corroborated → verified. Disputed or rejected stays on the record.
       </p>
@@ -130,7 +131,7 @@ export function VerifyDesk() {
           </div>
         </div>
       ))}
-      {findings.length === 0 && <div className="kcn-muted">No findings to verify.</div>}
+      {findings.length === 0 && <div className="kcn-muted">No findings to review yet.</div>}
     </section>
   );
 }
@@ -144,7 +145,7 @@ export function CustodyDesk() {
   const [reason, setReason] = useState("");
   return (
     <section>
-      <h2 className="kcn-title">Chain of custody</h2>
+      <h2 className="kcn-title">Custody</h2>
       <p className="kcn-muted mb-3">
         Working-copy custody log with a hash chain. Not a court exhibit locker.
       </p>
@@ -182,7 +183,7 @@ export function CustodyDesk() {
           <div className="kcn-tiny kcn-muted">
             {c.at} · {c.actor} · {c.reason}
           </div>
-          <div className="kcn-tiny mt-1">hash {c.hash.slice(0, 16)}… prev {c.prev.slice(0, 10)}</div>
+          <div className="kcn-tiny mt-1">hash {(c.hash || "").slice(0, 16)}… prev {(c.prev || "").slice(0, 10)}</div>
         </div>
       ))}
       {custody.length === 0 && <div className="kcn-muted">No custody events yet. Ingest a source or log one.</div>}
@@ -194,7 +195,7 @@ export function AcquireDesk() {
   const acquisitions = useKcn((s) => s.acquisitions);
   return (
     <section>
-      <h2 className="kcn-title">Evidence acquisition</h2>
+      <h2 className="kcn-title">Hashes</h2>
       <p className="kcn-muted mb-3">
         Each ingest can carry method, operator, tool, and SHA-256 of the working copy. This is provenance for the
         notebook, not a write-blocked forensic image.
@@ -205,7 +206,7 @@ export function AcquireDesk() {
           <div className="kcn-tiny kcn-muted">
             {a.at} · {a.method} · {a.operator} · {a.tool} {a.version}
           </div>
-          <div className="kcn-tiny mt-1">acquired SHA-256 {a.acquiredHash.slice(0, 24)}…</div>
+          <div className="kcn-tiny mt-1">acquired SHA-256 {(a.acquiredHash || "").slice(0, 24)}…</div>
           <div className="kcn-tiny">{a.writeBlock}</div>
         </div>
       ))}
@@ -219,7 +220,7 @@ export function ReportDesk() {
   const text = useMemo(() => buildReport(store), [store]);
   return (
     <section>
-      <h2 className="kcn-title">Investigative report</h2>
+      <h2 className="kcn-title">Report</h2>
       <p className="kcn-muted mb-3">Standardized draft from the current case. Review every line before you publish.</p>
       <button className="kcn-btn gold mb-3" onClick={() => downloadText("KCN-II-report.txt", text)}>
         Download report
@@ -234,7 +235,7 @@ export function SwarmDesk() {
   const cards = useMemo(() => swarmBrief(store), [store]);
   return (
     <section>
-      <h2 className="kcn-title">Investigation swarm</h2>
+      <h2 className="kcn-title">Case brief</h2>
       <p className="kcn-muted mb-3">
         Nine local analytical passes over the board. Optional OSINT opens public search in new tabs.
       </p>
@@ -246,7 +247,7 @@ export function SwarmDesk() {
             store.mergeContradictions(findContradictions(store));
           }}
         >
-          Run swarm
+          Run brief
         </button>
       </div>
       {cards.map((c) => (
@@ -266,7 +267,7 @@ export function ActivityDesk() {
   const [name, setName] = useState(operator);
   return (
     <section>
-      <h2 className="kcn-title">Activity log</h2>
+      <h2 className="kcn-title">Activity</h2>
       <p className="kcn-muted mb-3">Local operator history for this device. Not a multi-user server.</p>
       <div className="mb-3 flex gap-2">
         <input className="kcn-field" value={name} onChange={(e) => setName(e.target.value)} placeholder="Operator name" />
@@ -301,13 +302,26 @@ export function InterviewDesk() {
   useEffect(() => () => stopRec(), []);
 
   function stopRec() {
-    recRef.current?.stop();
+    try {
+      const rec = recRef.current;
+      if (rec && rec.state !== "inactive") rec.stop();
+    } catch {
+      /* already stopped */
+    }
     recRef.current = null;
-    recg.current?.stop();
+    try {
+      recg.current?.stop();
+    } catch {
+      /* ignore */
+    }
     recg.current = null;
   }
 
   async function start() {
+    if (typeof MediaRecorder === "undefined") {
+      setStatus("This browser cannot record audio.");
+      return;
+    }
     stopRec();
     try {
       const media = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -358,7 +372,7 @@ export function InterviewDesk() {
 
   return (
     <section>
-      <h2 className="kcn-title">Interview recorder</h2>
+      <h2 className="kcn-title">Interview</h2>
       <p className="kcn-muted mb-3">
         Records audio on this device and files a transcript into the case when the browser supports speech-to-text.
       </p>
@@ -445,6 +459,408 @@ export function CasesDesk() {
   );
 }
 
+export function SearchDesk() {
+  const store = useKcn();
+  const [q, setQ] = useState("");
+  const [focus, setFocus] = useState<SwarmFocus>("auto");
+  const [busy, setBusy] = useState(false);
+  const [live, setLive] = useState<SwarmRun | null>(null);
+  const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [intent, setIntent] = useState("");
+  const feedRef = useRef<HTMLDivElement>(null);
+  const abort = useRef(false);
+
+  useEffect(() => {
+    const el = feedRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [live?.events.length]);
+
+  useEffect(() => {
+    const next = store.pendingSearch;
+    if (!next) return;
+    if (busy) {
+      abort.current = true;
+      return;
+    }
+    store.clearPendingSearch();
+    setQ(next);
+    void run(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.pendingSearch, busy]);
+
+  function tick() {
+    return new Date().toLocaleTimeString();
+  }
+
+  async function run(raw?: string) {
+    const query = (typeof raw === "string" ? raw : q).trim();
+    if (!query || busy) return;
+    abort.current = false;
+    setBusy(true);
+    const hint = {
+      people: store.people.slice(0, 6).map((p) => p.name),
+      places: store.locations.slice(0, 6).map((p) => p.name),
+      orgs: store.orgs.slice(0, 6).map((o) => o.name),
+      findings: store.findings.slice(0, 4).map((f) => f.t.slice(0, 80)),
+    };
+    const sketch = localPlan(query, focus, hint);
+    const id = Math.random().toString(36).slice(2, 10);
+    let current: SwarmRun = {
+      id,
+      q: query,
+      at: nowStamp(),
+      agents: sketch.tasks.map((t) => t.agent),
+      engines: sketch.tasks.map((t) => [t.agent, t.where] as [string, string]),
+      events: [
+        {
+          at: tick(),
+          kind: "control",
+          source: "CONTROLLER",
+          text: "Writing tasking. Directing agents to the right sources.",
+        },
+      ],
+      hits: [],
+      briefing: "",
+      status: "running",
+      intent: sketch.intent,
+      tasks: sketch.tasks,
+    };
+    const push = (ev: SearchEvent) => {
+      current = { ...current, events: [...current.events, ev] };
+      setLive({ ...current });
+      store.upsertSwarm(current);
+    };
+    setIntent(sketch.intent);
+    setTasks(sketch.tasks);
+    setLive(current);
+    store.upsertSwarm(current);
+
+    let plan = sketch;
+    try {
+      plan = await planSwarm({ data: { query, focus, hint } });
+    } catch {
+      plan = sketch;
+    }
+    if (abort.current) {
+      setBusy(false);
+      return;
+    }
+    current = {
+      ...current,
+      intent: plan.intent,
+      agents: plan.tasks.map((t) => t.agent),
+      engines: plan.tasks.map((t) => [t.agent, t.where] as [string, string]),
+      tasks: plan.tasks,
+    };
+    setIntent(plan.intent);
+    setTasks(plan.tasks);
+    push({
+      at: tick(),
+      kind: "control",
+      source: "CONTROLLER",
+      text: `${plan.from === "ai" ? "AI controller" : "Local controller"}: ${plan.intent}`,
+    });
+    plan.tasks.forEach((t) => {
+      push({
+        at: tick(),
+        kind: "control",
+        source: t.agent,
+        text: `PROMPT → ${t.why}  Query: ${t.query}`,
+        url: t.where,
+      });
+    });
+
+    async function exec(t: AgentTask) {
+      if (abort.current) return;
+      t.status = "running";
+      setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...t } : x)));
+      push({
+        at: tick(),
+        kind: "search",
+        source: t.agent,
+        text: `Hitting ${t.source === "grok" ? "live web + X" : t.source} for “${t.query}”`,
+        url: t.where,
+      });
+      try {
+        if (t.source === "grok") {
+          const g = await liveGrokSearch({ data: { query: t.query, hits: current.hits } });
+          if (g.hits?.length) {
+            current = { ...current, hits: [...current.hits, ...g.hits] };
+            t.hits = g.hits.length;
+            t.status = "hit";
+            g.hits.forEach((h) => {
+              push({ at: tick(), kind: "hit", source: t.agent, text: h.title, url: h.url });
+            });
+          } else t.status = g.error ? "fail" : "empty";
+          if (g.text) {
+            current = { ...current, briefing: g.text };
+            push({ at: tick(), kind: "note", source: t.agent, text: "Briefing ready. Human review required." });
+          }
+          if (g.error) push({ at: tick(), kind: "fail", source: t.agent, text: g.error });
+        } else {
+          const r = await probeSource({ data: { source: t.source, query: t.query } });
+          if (r.hits?.length) {
+            current = { ...current, hits: [...current.hits, ...r.hits] };
+            t.hits = r.hits.length;
+            t.status = "hit";
+            r.hits.forEach((h) => {
+              push({ at: tick(), kind: "hit", source: t.agent, text: h.title, url: h.url });
+            });
+            push({
+              at: tick(),
+              kind: "note",
+              source: t.agent,
+              text: `${r.hits.length} hit${r.hits.length === 1 ? "" : "s"}`,
+            });
+          } else {
+            t.status = "empty";
+            push({
+              at: tick(),
+              kind: "fail",
+              source: t.agent,
+              text: r.error || "No hits",
+              url: r.where || t.where,
+            });
+          }
+        }
+      } catch {
+        t.status = "fail";
+        push({ at: tick(), kind: "fail", source: t.agent, text: "Did not answer", url: t.where });
+      }
+      setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...t } : x)));
+      current = { ...current, tasks: (current.tasks || []).map((x) => (x.id === t.id ? { ...t } : x)) };
+      setLive({ ...current });
+    }
+
+    const wave1 = plan.tasks.filter((t) => t.source !== "grok");
+    const liveAgent = plan.tasks.find((t) => t.source === "grok");
+    for (const t of wave1) {
+      if (abort.current) break;
+      await exec(t);
+    }
+
+    if (!abort.current) {
+      push({
+        at: tick(),
+        kind: "control",
+        source: "CONTROLLER",
+        text: "Reading hits. Retasking agents onto gaps.",
+      });
+      try {
+        const follow = await retaskSwarm({
+          data: {
+            query,
+            hits: current.hits,
+            done: wave1.map((t) => ({ source: t.source, query: t.query })),
+          },
+        });
+        if (follow.intent) {
+          setIntent(follow.intent);
+          current = { ...current, intent: follow.intent };
+          push({ at: tick(), kind: "control", source: "CONTROLLER", text: follow.intent });
+        }
+        if (follow.tasks.length) {
+          setTasks((prev) => [...prev, ...follow.tasks]);
+          current = { ...current, tasks: [...(current.tasks || []), ...follow.tasks] };
+          for (const t of follow.tasks) {
+            if (abort.current) break;
+            if (t.source === "grok") continue;
+            push({
+              at: tick(),
+              kind: "control",
+              source: t.agent,
+              text: `RETASK → ${t.why}  Query: ${t.query}`,
+              url: t.where,
+            });
+            await exec(t);
+          }
+        } else {
+          push({ at: tick(), kind: "control", source: "CONTROLLER", text: "No retask. First wave covered it." });
+        }
+      } catch {
+        push({ at: tick(), kind: "control", source: "CONTROLLER", text: "Retask skipped." });
+      }
+    }
+
+    if (!abort.current && liveAgent) await exec(liveAgent);
+
+    current = { ...current, status: abort.current ? "failed" : "done" };
+    push({
+      at: tick(),
+      kind: "done",
+      source: "CONTROLLER",
+      text: abort.current ? "Controller stopped the swarm." : `Sweep complete. ${current.hits.length} public hits.`,
+    });
+    store.upsertSwarm(current, true);
+    if (current.briefing) store.addChat("Search: " + query, current.briefing);
+    setLive(current);
+    setBusy(false);
+    setQ("");
+  }
+
+  const shown = live || store.swarmLog[0] || null;
+  const events = shown?.events || [];
+  const hits = shown?.hits || [];
+  const board = tasks.length ? tasks : ((shown?.tasks || []) as AgentTask[]);
+  const FOCUS: SwarmFocus[] = ["auto", "person", "place", "org", "news"];
+
+  return (
+    <section>
+      <div className="kcn-legal-stamp">AI CONTROLLER • SWARM DIRECTIVE</div>
+      <h2 className="kcn-title">Web search</h2>
+      <p className="kcn-hint">
+        The controller tasks each agent with its own prompt and sends it where it needs to hit. You will see the order, the query, and the URL. Public sources only.
+      </p>
+      <div className="mb-3 flex flex-wrap gap-2">
+        {FOCUS.map((f) => (
+          <button
+            key={f}
+            type="button"
+            className={`kcn-chip ${focus === f ? "on" : ""}`}
+            onClick={() => setFocus(f)}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <input
+          className="kcn-field flex-1"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void run();
+          }}
+          placeholder="Name, alias, place, or subject"
+        />
+        <button className="kcn-btn gold" disabled={busy} onClick={() => void run()}>
+          {busy ? "Directing…" : "Run swarm"}
+        </button>
+        {busy ? (
+          <button
+            className="kcn-btn"
+            type="button"
+            onClick={() => {
+              abort.current = true;
+            }}
+          >
+            Stop
+          </button>
+        ) : null}
+      </div>
+      <div className={`kcn-control ${shown?.status === "running" ? "live" : ""}`}>
+        <div className="kcn-control-head">
+          <span className={shown?.status === "running" ? "kcn-feed-pulse" : ""}>
+            {shown?.status === "running" ? "CONTROLLER LIVE" : "CONTROLLER"}
+          </span>
+          <span>{intent || shown?.intent || "Standby — waiting for a subject"}</span>
+        </div>
+        <div className="kcn-agents">
+          {(board.length ? board : []).map((t) => (
+            <div key={t.id} className={`kcn-agent ${t.status}`}>
+              <b>{t.agent}</b>
+              <span>{t.status}</span>
+              <em>{t.query}</em>
+              <p>{t.why}</p>
+              {t.where ? (
+                <a href={t.where} target="_blank" rel="noopener noreferrer">
+                  {t.where.replace(/^https?:\/\//, "").slice(0, 48)}
+                </a>
+              ) : null}
+            </div>
+          ))}
+          {!board.length && (
+            <div className="kcn-agent queued">
+              <b>STANDBY</b>
+              <span>idle</span>
+              <p>Run swarm. The controller will write prompts and send agents to DuckDuckGo, Wikipedia, maps, news, then live web + X.</p>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className={`kcn-feed ${shown?.status === "running" ? "live" : ""}`} ref={feedRef} aria-live="polite">
+        <div className="kcn-feed-head">
+          <span className={shown?.status === "running" ? "kcn-feed-pulse" : ""}>
+            {shown?.status === "running" ? "LIVE FEED" : shown ? "SEARCH FEED" : "STANDBY"}
+          </span>
+          <span>{shown ? shown.q : "Awaiting query"}</span>
+        </div>
+        {events.length === 0 && (
+          <div className="kcn-feed-row note">The controller feed will show every prompt, engine, and URL.</div>
+        )}
+        {events.map((ev, i) => (
+          <div key={i} className={`kcn-feed-row ${ev.kind}`}>
+            <span className="kcn-feed-dot" />
+            <span className="kcn-feed-time">{ev.at}</span>
+            <span className="kcn-feed-src">{ev.source}</span>
+            <span className="kcn-feed-text">
+              {ev.text}
+              {ev.url ? (
+                <>
+                  {" "}
+                  <a href={ev.url} target="_blank" rel="noopener noreferrer">
+                    {ev.url.replace(/^https?:\/\//, "").slice(0, 72)}
+                  </a>
+                </>
+              ) : null}
+            </span>
+          </div>
+        ))}
+      </div>
+      {hits.length > 0 && (
+        <div className="mt-4">
+          <div className="kcn-tiny kcn-muted mb-2">HITS — {hits.length} public sources</div>
+          {hits.map((h, i) => (
+            <a key={h.url + i} className="kcn-hit" href={h.url} target="_blank" rel="noopener noreferrer">
+              <b>{h.title}</b>
+              <span>{h.source}</span>
+              <em>{h.url.replace(/^https?:\/\//, "")}</em>
+              {h.snippet ? <p>{h.snippet}</p> : null}
+            </a>
+          ))}
+        </div>
+      )}
+      {shown?.briefing ? (
+        <div className="mt-4">
+          <div className="kcn-tiny kcn-muted mb-2">BRIEFING</div>
+          <pre className="kcn-legal-body">{shown.briefing}</pre>
+          <button
+            className="kcn-btn cyan mt-2"
+            type="button"
+            onClick={() => {
+              store.fileExtraction(shown.briefing, "OSINT " + shown.q);
+              store.addNote("OSINT briefing: " + shown.q);
+            }}
+          >
+            File briefing into case
+          </button>
+        </div>
+      ) : null}
+      {store.swarmLog.length > 1 && (
+        <div className="mt-4">
+          <div className="kcn-tiny kcn-muted mb-2">PRIOR SWEEPS</div>
+          {store.swarmLog.slice(shown && store.swarmLog[0]?.id === shown.id ? 1 : 0, 8).map((s) => (
+            <button
+              key={s.id || s.at + s.q}
+              className="kcn-item mb-2 w-full text-left"
+              type="button"
+              onClick={() => {
+                setLive(s);
+                setIntent(s.intent || "");
+                setTasks((s.tasks || []) as AgentTask[]);
+              }}
+            >
+              <b>{s.q}</b>
+              <div className="kcn-tiny kcn-muted">
+                {s.at} · {(s.hits || []).length} hits · {s.status || "done"}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 type SpeechLike = {
   continuous: boolean;
   interimResults: boolean;
@@ -452,4 +868,3 @@ type SpeechLike = {
   start: () => void;
   stop: () => void;
 };
-

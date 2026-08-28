@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createIntelAudio, type IntelAudio } from "@/lib/kcn/boot-audio";
-import { LEGAL_DOCS, recordLegalAcceptance } from "@/lib/kcn/legal-copy";
+import { LEGAL_DOCS, LEGAL_VERSION, readLegalAcceptance, recordLegalAcceptance } from "@/lib/kcn/legal-copy";
 import { Seal } from "./seal";
 
 const LINES = [
@@ -19,6 +19,7 @@ export function BootSequence({ onDone }: Props) {
   const audio = useRef<IntelAudio | null>(null);
   const doneRef = useRef(onDone);
   doneRef.current = onDone;
+  const [ready, setReady] = useState(false);
   const [phase, setPhase] = useState<"gate" | "run" | "out">("gate");
   const [log, setLog] = useState<string[]>([]);
   const [bar, setBar] = useState(0);
@@ -28,6 +29,11 @@ export function BootSequence({ onDone }: Props) {
   const [showLegal, setShowLegal] = useState(false);
   const [legalTab, setLegalTab] = useState(LEGAL_DOCS[0].id);
 
+  function finish() {
+    audio.current?.drone(false);
+    doneRef.current();
+  }
+
   function armAudio() {
     if (!audio.current) audio.current = createIntelAudio();
     audio.current.setMuted(muted);
@@ -36,6 +42,12 @@ export function BootSequence({ onDone }: Props) {
   }
 
   useEffect(() => {
+    const rec = readLegalAcceptance();
+    if (rec?.version === LEGAL_VERSION) {
+      doneRef.current();
+      return;
+    }
+    setReady(true);
     return () => audio.current?.stop();
   }, []);
 
@@ -52,6 +64,18 @@ export function BootSequence({ onDone }: Props) {
     recordLegalAcceptance();
     a.drone(true);
     a.ping();
+    let reduce = false;
+    try {
+      reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch {
+      reduce = false;
+    }
+    if (reduce) {
+      a.confirm();
+      a.drone(false);
+      setPhase("out");
+      return;
+    }
     setPhase("run");
   }
 
@@ -78,11 +102,13 @@ export function BootSequence({ onDone }: Props) {
 
   useEffect(() => {
     if (phase !== "out") return;
-    const t = window.setTimeout(() => doneRef.current(), 800);
+    const t = window.setTimeout(() => doneRef.current(), 400);
     return () => clearTimeout(t);
   }, [phase]);
 
   const active = LEGAL_DOCS.find((d) => d.id === legalTab) ?? LEGAL_DOCS[0];
+
+  if (!ready) return <div className="kcn-boot" aria-hidden />;
 
   return (
     <div
@@ -108,7 +134,7 @@ export function BootSequence({ onDone }: Props) {
         <p className="kcn-boot-sub">KETCHUM'S INTELLIGENT INVESTIGATOR</p>
         {phase === "gate" && (
           <>
-            <p className="kcn-tiny kcn-muted mt-4 tracking-[0.28em]">CLASSIFIED OPERATIONS CONSOLE</p>
+            <p className="kcn-hint mt-4">Check the box, then tap Authorize. Returning operators skip this screen.</p>
             <label className={`kcn-agree ${needAgree && !agreed ? "kcn-agree-need" : ""}`}>
               <input
                 type="checkbox"
@@ -129,13 +155,12 @@ export function BootSequence({ onDone }: Props) {
             <button className="kcn-btn gold mt-5 min-w-52" type="button" onClick={engage}>
               AUTHORIZE ACCESS
             </button>
-            <p className="kcn-tiny kcn-muted mt-3">Tap authorize to arm audio and initialize the database.</p>
             <button className="kcn-tiny mt-3 text-cyan underline" type="button" onClick={() => setShowLegal((v) => !v)}>
               {showLegal ? "Hide agreements" : "Read License, User Agreement, and Legal Agreement"}
             </button>
             {showLegal && (
               <div className="kcn-boot-legal">
-                <p className="kcn-tiny kcn-muted mb-2">Legal Pack — same text as the in-console License & Legal desk.</p>
+                <p className="kcn-tiny kcn-muted mb-2">Legal Pack — same text as the in-console Legal desk.</p>
                 <div className="mb-2 flex flex-wrap justify-center gap-2">
                   {LEGAL_DOCS.map((d) => (
                     <button
@@ -162,6 +187,9 @@ export function BootSequence({ onDone }: Props) {
               <span style={{ width: `${bar}%` }} />
             </div>
             <div className="kcn-tiny kcn-muted mt-2">{bar}% — DATABASE INIT</div>
+            <button className="kcn-btn mt-4" type="button" onClick={finish}>
+              Skip
+            </button>
           </div>
         )}
         <button

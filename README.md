@@ -8,7 +8,7 @@ Sealed case-intelligence console. Independent review workspace for sources, scan
 **Certification:** [COMPLIANCE.md](COMPLIANCE.md) (IDPC-1.0 — operator-attested device tests, not ISO / SOC / FedRAMP / CJIS)
 
 **Source:** [github.com/Evank253/KCN-II](https://github.com/Evank253/KCN-II)  
-**Live console:** this Grok Build session. A public `*.grok.me` address is issued when you tap **Publish** here (choose anyone-with-the-link to share). That same address is the installable web app (Add to Home Screen).
+**Live console:** tap **Publish** in this Grok chat and choose **anyone with the link**. That address is what you share. Recipients sign in with **email** — they do not need a Grok account. The same address is the installable web app (Add to Home Screen).
 
 KCN-II is **not** law enforcement, **not** a court, and **not** a classified government system. The American intelligence look is design only. Human review is required on every automatic lead.
 
@@ -18,11 +18,13 @@ KCN-II is **not** law enforcement, **not** a court, and **not** a classified gov
 
 1. Confirm you are 18+ and accept the Legal Pack.
 2. Tap **AUTHORIZE ACCESS**. Audio arms from that tap.
-3. Create or unlock the **sealed vault** (12+ character passphrase). There is no recovery if it is lost.
-4. Work the desks. **Quick Investigator** stays hidden until you want it.
-5. Optional: **Vault & certification → Run certification** for a live IDPC-1.0 control test on this device.
+3. **Sign in with email.** No Grok, Google, or X login. Create an account if you are new. Each email is its own sealed case.
+4. Create or unlock **your sealed vault** (12+ character passphrase, separate from the sign-in password). There is no recovery if the vault passphrase is lost.
+5. Work the desks. **Ask** does what you typed — `search Jane Doe` runs the swarm; `add person …` files the name.
+6. **Switch account** / **Sign out** locks this case. A different email cannot open it.
+7. Optional: **Vault → Run certification** for a live IDPC-1.0 control test on this device.
 
-Idle lock is five minutes. **Lock** wipes keys and case text from memory. **Export sealed** downloads ciphertext only — still needs the passphrase.
+Idle lock is five minutes. **Lock** wipes keys and case text from memory but keeps you signed in. **Export** downloads ciphertext only — still needs the vault passphrase. **Wipe this investigator** removes only this account's vault.
 
 ---
 
@@ -31,38 +33,69 @@ Idle lock is five minutes. **Lock** wipes keys and case text from memory. **Expo
 ### Collect
 | Desk | What it does |
 |---|---|
-| Scan and look up | Camera or photo. OCR stays on this device. Lookup sends the still only if you check consent. |
-| Reader | File ingest and extracted text. |
-| Interview | On-device audio. Speech-to-text files a transcript when the browser supports it. |
-| Video | Public video link as evidence. |
-| OSINT swarm | Public search engines in new tabs. No paywall bypass. |
+| Scan | Camera or photo. On-device OCR. Lookup only if you check consent. |
+| Files | Documents and pasted text. Names, places, and findings are extracted onto the board. |
+| Interview | Record on this device. Speech-to-text files a transcript when the browser supports it. |
+| Video | File a public video link as evidence. |
+| Web search | AI controller tasks swarm agents. Live feed of engines, URLs, and hits. DuckDuckGo, Wikipedia, Wikidata, maps, news, live web + X. |
 
 ### Case
-People, organizations, locations, notes, and named cases on the working board.
+| Desk | What it does |
+|---|---|
+| Cases | Named working files inside the vault. |
+| People | Names and roles. |
+| Organizations | Groups and companies. |
+| Places | Locations and addresses. |
+| Notes | Quick facts and follow-ups. |
 
 ### Analyze
-Assistant over the case digest, investigation swarm, entity resolution, relationship map, timeline, contradiction flags.
+| Desk | What it does |
+|---|---|
+| Ask | Controller: `search Jane Doe` runs the swarm; `add person …` files a name; questions stay on the case. |
+| Case brief | Local nine-pass review of the board. |
+| Match names | Alias / same-person candidates. |
+| Links | Who is connected to whom. |
+| Timeline | Dated events from ingest and notes. |
+| Conflicts | Contradictions flagged for human review. |
 
 ### Preserve
-Evidence, acquisition hashes (SHA-256 of the working copy), chain of custody (hash-chained notebook log), findings, human verification (generated → unreviewed → corroborated → verified / disputed / rejected).
+| Desk | What it does |
+|---|---|
+| Evidence | Working copies with type and custodian. |
+| Hashes | SHA-256 of the working copy (not a forensic image). |
+| Custody | Hash-chained notebook log. |
+| Findings | Leads with verification status. |
+| Review | generated → unreviewed → corroborated → verified / disputed / rejected. |
 
 ### Output
-Standardized investigative report, case intelligence, activity log.
+| Desk | What it does |
+|---|---|
+| Report | Standardized investigative report. Human review required. |
+| Overview | Counts across the board. |
+| Activity | What this investigator did, in order. |
 
 ### System
-Vault & certification, License & legal.
+| Desk | What it does |
+|---|---|
+| Vault | Lock, sealed export, wipe this account, IDPC-1.0 live control test. |
+| Legal | License, User Agreement, Legal Agreement. |
 
-Photos are stripped from the vault. Case files never leave this device unless you run a consented lookup.
+Also: idle lock (5 minutes), Switch account / Sign out, Ask bar (optional), cinematic boot, AES-256-GCM sealed vault per email.
+
+Photos are stripped from the vault. Case ciphertext is stored only for that signed-in account. Lookups leave the device only if you consent.
 
 ---
 
 ## Vault
 
-- AES-256-GCM at rest
+- Email sign-in so each investigator has their own account. No Grok account required to use a shared link.
+- AES-256-GCM at rest, including the private ciphertext stored for that account
 - PBKDF2-SHA256, 250,000 iterations, non-extractable key
+- Sign-in password and vault passphrase are separate. The server never receives the vault passphrase
 - Passphrase never stored
 - Hash-chained audit inside the sealed blob
 - Sealed export / sealed import only — plaintext case files are rejected
+- A persist in flight cannot write into another account's vault
 
 IDPC-1.0 is a live test of those controls on the operator's device. It is **not** a purchased certificate and does not replace a licensed auditor or an ATO.
 

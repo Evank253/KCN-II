@@ -122,6 +122,7 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
   }
 
   async function onPick(file: File) {
+    try {
     const url = URL.createObjectURL(file);
     const img = new Image();
     await new Promise<void>((res, rej) => {
@@ -130,12 +131,18 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
       img.src = url;
     });
     const c = canvasRef.current;
-    if (!c) return;
-    const scale = Math.min(1, 1600 / img.width);
+    if (!c) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    const scale = Math.min(1, 1600 / Math.max(img.width, 1));
     c.width = Math.round(img.width * scale);
     c.height = Math.round(img.height * scale);
     const ctx = c.getContext("2d");
-    if (!ctx) return;
+    if (!ctx) {
+      URL.revokeObjectURL(url);
+      return;
+    }
     ctx.drawImage(img, 0, 0, c.width, c.height);
     setImageDataUrl(compressImage(img));
     enhanceDoc(ctx, c.width, c.height);
@@ -143,6 +150,10 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
     setLive(false);
     URL.revokeObjectURL(url);
     void ocrFromCanvas(c);
+    } catch {
+      toast("Could not read that photo.");
+      setStatus("Could not read that photo. Try another image.");
+    }
   }
 
   function fileOnly() {
@@ -152,7 +163,7 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
     }
     const label = "Scanned page " + nowStamp();
     const packed = fileExtraction(ocr, label);
-    void stampIngest(ocr, label, "document-scan");
+    void stampIngest(ocr, label, "document-scan").catch(() => undefined);
     addScan({
       title: label,
       at: nowStamp(),
@@ -206,7 +217,7 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
       if (ocr) {
         const label = "Capture " + nowStamp();
         const packed = fileExtraction(ocr, label);
-        void stampIngest(ocr, label, "camera-capture");
+        void stampIngest(ocr, label, "camera-capture").catch(() => undefined);
         addScan({
           title: label,
           at: nowStamp(),
@@ -236,13 +247,13 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
     <div className="kcn-sheet">
       <div className="kcn-sheet-card">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="kcn-title mb-0">Scan and look up</h2>
+          <h2 className="kcn-title mb-0">Scan</h2>
           <button className="kcn-btn" onClick={() => { stopCam(); setImageDataUrl(""); wipeCanvas(canvasRef.current); onClose(); }}>
             Close
           </button>
         </div>
-        <p className="kcn-muted kcn-tiny mb-3">
-          Take a picture or upload one, then tell KCN-II what to do. Filing stays on this device. Lookup only sends the photo if you allow it.
+        <p className="kcn-hint mb-3">
+          Capture or pick a photo. Choose what to do. Filing stays on this device. Lookup sends the photo only if you check the box.
         </p>
         <div className="grid gap-3 md:grid-cols-2">
           <div>

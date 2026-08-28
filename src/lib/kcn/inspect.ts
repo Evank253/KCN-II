@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
 import { gateLookupImage } from "./lookup-gate";
 
 export type InspectResult = {
@@ -17,39 +18,32 @@ export const inspectCapture = createServerFn({ method: "POST" })
       offDeviceConsent: boolean;
     }) => input,
   )
+  .middleware([authMiddleware])
   .handler(async ({ data }): Promise<InspectResult> => {
-    const apiKey = process.env.XAI_API_KEY;
     const instruction = (data.instruction || "").trim() ||
       "Look this up. Identify what the photo shows and gather useful public information.";
     const ocr = (data.ocrText || "").trim();
+    const fail = (error: string): InspectResult => ({
+      ok: false,
+      briefing: "",
+      searches: fallbackSearches(instruction, ocr),
+      error,
+    });
+    try {
+    const apiKey = process.env.XAI_API_KEY;
     const gated = gateLookupImage(data.imageDataUrl, !!data.offDeviceConsent);
     const imageDataUrl = gated.image;
 
     if (data.imageDataUrl && !data.offDeviceConsent) {
-      return {
-        ok: false,
-        briefing: "",
-        searches: fallbackSearches(instruction, ocr),
-        error: gated.error || "Off-device photo transfer requires explicit operator consent.",
-      };
+      return fail(gated.error || "Off-device photo transfer requires explicit operator consent.");
     }
 
     if (gated.error && data.imageDataUrl) {
-      return {
-        ok: false,
-        briefing: "",
-        searches: fallbackSearches(instruction, ocr),
-        error: gated.error,
-      };
+      return fail(gated.error);
     }
 
     if (!apiKey) {
-      return {
-        ok: false,
-        briefing: "",
-        searches: fallbackSearches(instruction, ocr),
-        error: "Lookup AI is not available in this environment. Public-source searches are still ready.",
-      };
+      return fail("Lookup AI is not available in this environment. Public-source searches are still ready.");
     }
 
     const prompt = [
@@ -94,12 +88,7 @@ export const inspectCapture = createServerFn({ method: "POST" })
     });
 
     if (!res.ok) {
-      return {
-        ok: false,
-        briefing: "",
-        searches: fallbackSearches(instruction, ocr),
-        error: `Lookup failed (${res.status}). Public-source searches are still ready.`,
-      };
+      return fail(`Lookup failed (${res.status}). Public-source searches are still ready.`);
     }
 
     const body = (await res.json()) as {
@@ -112,6 +101,9 @@ export const inspectCapture = createServerFn({ method: "POST" })
       briefing,
       searches: searches.length ? searches : fallbackSearches(instruction, ocr),
     };
+    } catch {
+      return fail("Lookup failed. Public-source searches are still ready.");
+    }
   });
 
 function parseQueries(briefing: string): string[] {

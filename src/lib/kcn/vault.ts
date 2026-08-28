@@ -1,5 +1,17 @@
 import type { KcnState } from "./store";
 import {
+  activeInvestigatorId,
+  easyKey,
+  investigatorHasVault,
+  listInvestigators,
+  registerInvestigator,
+  removeInvestigator,
+  setActiveInvestigatorId,
+  touchInvestigator,
+  vaultKey,
+} from "./accounts";
+import { deleteCloudVault, pushAccountVault } from "./cloud-vault";
+import {
   KDF_ITER,
   b64,
   bytes,
@@ -28,6 +40,8 @@ export type VaultMeta = {
   created: string;
   lastOpen: string;
   idleMs: number;
+  investigatorId?: string;
+  operatorName?: string;
 };
 
 export type VaultPayload = {
@@ -46,11 +60,13 @@ export type SealedVault = {
   iv: string;
   ct: string;
   created: string;
+  investigatorId?: string;
 };
 
 let sessionKey: CryptoKey | null = null;
 let unlocked = false;
 let payload: VaultPayload | null = null;
+let activeId: string | null = null;
 let persistChain: Promise<void> = Promise.resolve();
 
 function isSealed(v: unknown): v is SealedVault {
@@ -79,12 +95,16 @@ export function caseHasImageBlobs(state: KcnState | null | undefined): boolean {
 
 export { cryptoReady };
 
+export function currentInvestigatorId(): string | null {
+  return activeId;
+}
+
 export function vaultExists(): boolean {
-  try {
-    return !!localStorage.getItem(VAULT_STORAGE);
-  } catch {
-    return false;
-  }
+  return listInvestigators().some((u) => investigatorHasVault(u.id)) || !!readSealedRaw(VAULT_STORAGE);
+}
+
+export function vaultExistsFor(id: string): boolean {
+  return investigatorHasVault(id);
 }
 
 export function plaintextResidue(): boolean {
@@ -96,12 +116,12 @@ export function plaintextResidue(): boolean {
 }
 
 export function isUnlocked(): boolean {
-  return unlocked && !!sessionKey;
+  return unlocked && !!sessionKey && !!activeId;
 }
 
-export function readSealed(): SealedVault | null {
+function readSealedRaw(key: string): SealedVault | null {
   try {
-    const raw = localStorage.getItem(VAULT_STORAGE);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as SealedVault;
     return isSealed(parsed) ? parsed : null;
@@ -110,32 +130,46 @@ export function readSealed(): SealedVault | null {
   }
 }
 
+export function readSealedFor(id: string): SealedVault | null {
+  return readSealedRaw(vaultKey(id));
+}
+
+export function readSealed(): SealedVault | null {
+  if (activeId) return readSealedFor(activeId);
+  return readSealedRaw(VAULT_STORAGE);
+}
+
 export function sealedStorageLooksClean(): boolean {
   try {
-    const raw = localStorage.getItem(VAULT_STORAGE) || "";
-    if (!raw) return false;
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!isSealed(parsed)) return false;
+    const sealed = readSealed();
+    if (!sealed) return false;
+    const raw = JSON.stringify(sealed);
     const forbidden = ["passphrase", "password", "CryptoKey", "rawKey"];
     if (forbidden.some((k) => raw.toLowerCase().includes(k.toLowerCase()))) return false;
-    return typeof parsed.ct === "string" && typeof parsed.salt === "string" && !("key" in parsed);
+    return typeof sealed.ct === "string" && typeof sealed.salt === "string" && !("key" in sealed);
   } catch {
     return false;
   }
 }
 
-export async function createVault(passphrase: string, seed?: KcnState): Promise<void> {
+export async function createVault(passphrase: string, seed?: KcnState, operatorName?: string, ownerId?: string): Promise<void> {
   if (!cryptoReady()) throw new Error("Web Crypto is not available.");
+  const name = (operatorName || "Investigator").trim().slice(0, 48) || "Investigator";
+  const user = ownerId ? { id: ownerId, name } : registerInvestigator(name);
+  if (ownerId) setActiveInvestigatorId(ownerId);
+  activeId = user.id;
   const salt = bytes(16);
   const key = await deriveKey(passphrase, salt);
   sessionKey = key;
   unlocked = true;
   const now = new Date().toISOString();
   const genesis = await chainAudit([], "VAULT_CREATED");
+  const seeded = sanitizeCase(seed || emptyCase());
+  seeded.operator = user.name;
   const next: VaultPayload = {
-    case: sanitizeCase(seed || emptyCase()),
+    case: seeded,
     audit: genesis,
-    meta: { created: now, lastOpen: now, idleMs: IDLE_MS },
+    meta: { created: now, lastOpen: now, idleMs: IDLE_MS, investigatorId: user.id, operatorName: user.name },
   };
   const { iv, ct } = await encryptJson(key, next);
   const sealed: SealedVault = {
@@ -148,28 +182,47 @@ export async function createVault(passphrase: string, seed?: KcnState): Promise<
     iv,
     ct,
     created: now,
+    investigatorId: user.id,
   };
-  localStorage.setItem(VAULT_STORAGE, JSON.stringify(sealed));
+  localStorage.setItem(vaultKey(user.id), JSON.stringify(sealed));
   overwriteWipe(PLAIN_STORAGE);
   payload = next;
+  touchInvestigator(user.id);
+  void pushAccountVault(user.id);
 }
 
-export async function unlockVault(passphrase: string): Promise<VaultPayload> {
-  const sealed = readSealed();
-  if (!sealed) throw new Error("No sealed vault on this device.");
+export async function unlockVault(passphrase: string, investigatorId?: string): Promise<VaultPayload> {
+  const id = investigatorId || activeInvestigatorId() || listInvestigators()[0]?.id;
+  if (!id) throw new Error("No investigator on this device.");
+  const sealed = readSealedFor(id);
+  if (!sealed) throw new Error("No sealed vault for that investigator.");
   const key = await deriveKey(passphrase, unb64(sealed.salt));
   let next: VaultPayload;
   try {
     next = await decryptJson<VaultPayload>(key, sealed.iv, sealed.ct);
   } catch {
-    throw new Error("Passphrase did not open the vault.");
+    throw new Error("Passphrase did not open that investigator's vault.");
   }
+  if (next.meta?.investigatorId && next.meta.investigatorId !== id) {
+    throw new Error("That vault does not belong to this investigator.");
+  }
+  activeId = id;
+  setActiveInvestigatorId(id);
   sessionKey = key;
   unlocked = true;
+  next.meta = next.meta || { created: sealed.created, lastOpen: "", idleMs: IDLE_MS };
   next.meta.lastOpen = new Date().toISOString();
-  next.case = sanitizeCase(next.case);
-  next.audit = await chainAudit(next.audit, "VAULT_UNLOCKED");
+  next.meta.investigatorId = id;
+  const user = listInvestigators().find((u) => u.id === id);
+  if (user) {
+    next.meta.operatorName = user.name;
+    next.case = { ...sanitizeCase(next.case), operator: user.name };
+  } else {
+    next.case = sanitizeCase(next.case);
+  }
+  next.audit = await chainAudit(next.audit || [], "VAULT_UNLOCKED");
   payload = next;
+  touchInvestigator(id);
   await persistPayload();
   return next;
 }
@@ -178,13 +231,41 @@ export function lockVault(): void {
   sessionKey = null;
   unlocked = false;
   payload = null;
+  activeId = null;
+}
+
+function enqueuePersist(job: () => Promise<void>): Promise<void> {
+  const run = persistChain.then(job);
+  persistChain = run.catch(() => undefined);
+  return persistChain;
+}
+
+function ownerGuard(id: string, data: VaultPayload): boolean {
+  return !data.meta?.investigatorId || data.meta.investigatorId === id;
+}
+
+async function writeSealed(id: string, key: CryptoKey, data: VaultPayload): Promise<void> {
+  if (!ownerGuard(id, data)) return;
+  const sealed = readSealedFor(id);
+  if (!sealed) return;
+  data.case = sanitizeCase(data.case);
+  const { iv, ct } = await encryptJson(key, data);
+  localStorage.setItem(vaultKey(id), JSON.stringify({ ...sealed, iv, ct, investigatorId: id }));
+  void pushAccountVault(id);
 }
 
 export async function persistCase(state: KcnState): Promise<void> {
-  if (!isUnlocked() || !payload) return;
-  payload.case = sanitizeCase(state);
-  payload.audit = await chainAudit(payload.audit, "CASE_SEALED");
-  await persistPayload();
+  const id = activeId;
+  const key = sessionKey;
+  const data = payload;
+  if (!unlocked || !id || !key || !data) return;
+  if (!ownerGuard(id, data)) return;
+  data.case = sanitizeCase(state);
+  await enqueuePersist(async () => {
+    if (!ownerGuard(id, data)) return;
+    data.audit = await chainAudit(data.audit, "CASE_SEALED");
+    await writeSealed(id, key, data);
+  });
 }
 
 export function currentPayload(): VaultPayload | null {
@@ -192,29 +273,45 @@ export function currentPayload(): VaultPayload | null {
 }
 
 export async function recordAudit(action: string): Promise<void> {
-  if (!isUnlocked() || !payload) return;
-  payload.audit = await chainAudit(payload.audit, action);
-  await persistPayload();
+  const id = activeId;
+  const key = sessionKey;
+  const data = payload;
+  if (!unlocked || !id || !key || !data) return;
+  if (!ownerGuard(id, data)) return;
+  await enqueuePersist(async () => {
+    if (!ownerGuard(id, data)) return;
+    data.audit = await chainAudit(data.audit, action);
+    await writeSealed(id, key, data);
+  });
 }
 
 async function persistPayload(): Promise<void> {
-  const job = persistChain.then(async () => {
-    if (!sessionKey || !payload) return;
-    const sealed = readSealed();
-    if (!sealed) return;
-    payload.case = sanitizeCase(payload.case);
-    const { iv, ct } = await encryptJson(sessionKey, payload);
-    localStorage.setItem(VAULT_STORAGE, JSON.stringify({ ...sealed, iv, ct }));
+  const id = activeId;
+  const key = sessionKey;
+  const data = payload;
+  if (!id || !key || !data) return;
+  if (!ownerGuard(id, data)) return;
+  await enqueuePersist(async () => {
+    if (!ownerGuard(id, data)) return;
+    await writeSealed(id, key, data);
   });
-  persistChain = job.catch(() => undefined);
-  await job;
 }
 
 export async function wipeVault(): Promise<void> {
+  const id = activeId || activeInvestigatorId();
   lockVault();
-  overwriteWipe(VAULT_STORAGE);
+  await persistChain.catch(() => undefined);
+  if (id) {
+    overwriteWipe(vaultKey(id));
+    overwriteWipe(easyKey(id));
+    removeInvestigator(id);
+  }
   overwriteWipe(PLAIN_STORAGE);
-  overwriteWipe("KCN-II-LEGAL");
+  try {
+    await deleteCloudVault();
+  } catch {
+    /* still wiped locally */
+  }
 }
 
 export function sealedBackup(): string {
@@ -223,18 +320,31 @@ export function sealedBackup(): string {
   return JSON.stringify(sealed, null, 2);
 }
 
-export async function importSealed(raw: string, passphrase: string): Promise<VaultPayload> {
+export async function importSealed(raw: string, passphrase: string, operatorName?: string, ownerId?: string): Promise<VaultPayload> {
   const parsed = JSON.parse(raw) as SealedVault;
   if (!isSealed(parsed)) throw new Error("That file is not a KCN-II sealed vault.");
   const key = await deriveKey(passphrase, unb64(parsed.salt));
   const next = await decryptJson<VaultPayload>(key, parsed.iv, parsed.ct);
+  const name = (operatorName || next.meta?.operatorName || next.case?.operator || "Investigator").trim().slice(0, 48);
+  const user = ownerId ? { id: ownerId, name } : registerInvestigator(name);
+  if (ownerId) setActiveInvestigatorId(ownerId);
+  next.meta = {
+    ...(next.meta || { created: parsed.created, lastOpen: "", idleMs: IDLE_MS }),
+    investigatorId: user.id,
+    operatorName: user.name,
+    lastOpen: new Date().toISOString(),
+  };
+  activeId = user.id;
   sessionKey = key;
   unlocked = true;
-  payload = { ...next, case: sanitizeCase(next.case) };
-  localStorage.setItem(VAULT_STORAGE, JSON.stringify(parsed));
+  next.case = sanitizeCase({ ...next.case, operator: user.name });
+  payload = next;
+  localStorage.setItem(vaultKey(user.id), JSON.stringify({ ...parsed, investigatorId: user.id }));
   overwriteWipe(PLAIN_STORAGE);
-  payload.audit = await chainAudit(payload.audit, "VAULT_IMPORTED");
+  payload.audit = await chainAudit(payload.audit || [], "VAULT_IMPORTED");
+  touchInvestigator(user.id);
   await persistPayload();
+  void pushAccountVault(user.id);
   return payload;
 }
 
@@ -255,12 +365,12 @@ async function chainAudit(prev: AuditEntry[], action: string): Promise<AuditEntr
   const at = new Date().toISOString();
   const prevHash = last?.hash || "GENESIS";
   const hash = await sha256(`${seq}|${at}|${action}|${prevHash}`);
-  return [...prev.slice(-199), { seq, at, action, prev: prevHash, hash }];
+  return [...(prev || []).slice(-199), { seq, at, action, prev: prevHash, hash }];
 }
 
 export async function verifyAudit(entries: AuditEntry[]): Promise<boolean> {
   let prevHash = "GENESIS";
-  for (const e of entries) {
+  for (const e of entries || []) {
     const expect = await sha256(`${e.seq}|${e.at}|${e.action}|${prevHash}`);
     if (expect !== e.hash) return false;
     prevHash = e.hash;

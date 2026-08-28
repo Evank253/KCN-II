@@ -79,6 +79,42 @@ export type Contradiction = {
   status: "flagged" | "reviewed" | "resolved";
 };
 export type Activity = { at: string; actor: string; action: string; target: string };
+export type SearchEvent = {
+  at: string;
+  kind: "task" | "search" | "hit" | "fail" | "note" | "done" | "control";
+  source: string;
+  text: string;
+  url?: string;
+};
+export type SearchHit = {
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+};
+export type SwarmRun = {
+  id: string;
+  q: string;
+  at: string;
+  agents: string[];
+  engines: [string, string][];
+  events: SearchEvent[];
+  hits: SearchHit[];
+  briefing: string;
+  status: "running" | "done" | "failed";
+  intent?: string;
+  tasks?: {
+    id: string;
+    agent: string;
+    source: string;
+    query: string;
+    why: string;
+    where: string;
+    wave: 1 | 2;
+    status: string;
+    hits: number;
+  }[];
+};
 
 export type KcnState = {
   files: { name: string; size: number; at: string }[];
@@ -95,7 +131,7 @@ export type KcnState = {
   relations: { a: string; rel: string; b: string }[];
   chat: ChatMsg[];
   video: string;
-  swarmLog: { q: string; at: string; agents: string[]; engines: [string, string][] }[];
+  swarmLog: SwarmRun[];
   scans: ScanRec[];
   lookups: LookupRec[];
   custody: CustodyEvent[];
@@ -177,6 +213,10 @@ type Store = KcnState & {
   addRelation: (a: string, rel: string, b: string) => void;
   addChat: (you: string, kcn: string) => void;
   addSwarm: (q: string) => void;
+  upsertSwarm: (run: SwarmRun, persist?: boolean) => void;
+  requestSearch: (q: string) => void;
+  clearPendingSearch: () => void;
+  pendingSearch: string;
   setVideo: (url: string) => void;
   addCustody: (evidenceId: string, action: string, reason: string) => void;
   setVerify: (findingId: string, status: VerifyStatus) => void;
@@ -188,7 +228,7 @@ type Store = KcnState & {
 };
 
 function seal(get: () => Store) {
-  void persistCase(snapshotState(get()));
+  void persistCase(snapshotState(get())).catch(() => undefined);
 }
 
 function act(get: () => Store, set: (p: Partial<KcnState>) => void, action: string, target: string) {
@@ -198,9 +238,27 @@ function act(get: () => Store, set: (p: Partial<KcnState>) => void, action: stri
 
 export const useKcn = create<Store>((set, get) => ({
   ...blank(),
-  hydrateFrom: (data) => set({ ...blank(), ...data }),
+  pendingSearch: "",
+  hydrateFrom: (data) => {
+    try {
+      const base = blank();
+      const src = data || {};
+      const next = { ...base };
+      (Object.keys(base) as (keyof KcnState)[]).forEach((key) => {
+        const v = src[key];
+        if (v === undefined || v === null) return;
+        const b = base[key];
+        if (Array.isArray(b) && !Array.isArray(v)) return;
+        if (typeof b === "string" && typeof v !== "string") return;
+        (next as Record<string, unknown>)[key] = v;
+      });
+      set({ ...next, pendingSearch: "" });
+    } catch {
+      set({ ...blank(), pendingSearch: "" });
+    }
+  },
   persist: () => seal(get),
-  lockMemory: () => set(blank()),
+  lockMemory: () => set({ ...blank(), pendingSearch: "" }),
   setReading: (v) => {
     set({ reading: v });
     seal(get);
@@ -215,114 +273,122 @@ export const useKcn = create<Store>((set, get) => ({
     seal(get);
   },
   fileExtraction: (text, sourceName) => {
-    const label = sourceName || "Ingested source";
-    const packed = classifyText(text);
-    const s = get();
-    const people = [...s.people];
-    packed.names.forEach((name) => {
-      if (!people.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
-        people.unshift({ id: nid(), name, role: "Extracted from " + label });
-      }
-    });
-    const locations = [...s.locations];
-    packed.locations.forEach((place) => {
-      if (!locations.some((l) => l.name.toLowerCase() === place.toLowerCase())) {
-        locations.unshift({ id: nid(), name: place, at: nowStamp(), source: label });
-      }
-    });
-    const evId = nid();
-    const findings = [
-      ...packed.findings.map((f) => ({
-        id: nid(),
-        t: f,
-        at: nowStamp(),
-        source: label,
-        evidenceId: evId,
-        verify: "generated" as const,
-      })),
-      ...s.findings,
-    ];
-    const events = [
-      { id: nid(), when: nowStamp(), what: "Source ingested: " + label },
-      ...packed.dates.map((d) => ({
-        id: nid(),
-        when: d,
-        what: "Date mark from " + label,
-      })),
-      ...s.events,
-    ];
-    const relations = [...s.relations];
-    if (packed.names.length && packed.locations.length) {
-      relations.push({ a: packed.names[0], rel: "associated with", b: packed.locations[0] });
-    }
-    set({
-      reading: (s.reading ? s.reading + "\n\n" : "") + `--- SOURCE: ${label} ---\n` + text,
-      files: [{ name: label, size: text.length, at: nowStamp() }, ...s.files],
-      evidence: [
-        {
-          id: evId,
-          title: label,
-          type: "document",
+    try {
+      const label = sourceName || "Ingested source";
+      const packed = classifyText(text);
+      const s = get();
+      const people = [...(s.people || [])];
+      packed.names.forEach((name) => {
+        if (!people.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+          people.unshift({ id: nid(), name, role: "Extracted from " + label });
+        }
+      });
+      const locations = [...(s.locations || [])];
+      packed.locations.forEach((place) => {
+        if (!locations.some((l) => l.name.toLowerCase() === place.toLowerCase())) {
+          locations.unshift({ id: nid(), name: place, at: nowStamp(), source: label });
+        }
+      });
+      const evId = nid();
+      const findings = [
+        ...packed.findings.map((f) => ({
+          id: nid(),
+          t: f,
           at: nowStamp(),
           source: label,
-          custodian: s.operator || "Investigator",
-          status: "accepted",
-        },
-        ...s.evidence,
-      ],
-      people,
-      locations,
-      findings,
-      events,
-      relations,
-      activity: [{ at: nowStamp(), actor: s.operator || "Investigator", action: "ingest", target: label }, ...s.activity],
-    });
-    seal(get);
-    return packed;
+          evidenceId: evId,
+          verify: "generated" as const,
+        })),
+        ...(s.findings || []),
+      ];
+      const events = [
+        { id: nid(), when: nowStamp(), what: "Source ingested: " + label },
+        ...packed.dates.map((d) => ({
+          id: nid(),
+          when: d,
+          what: "Date mark from " + label,
+        })),
+        ...(s.events || []),
+      ];
+      const relations = [...(s.relations || [])];
+      if (packed.names.length && packed.locations.length) {
+        relations.push({ a: packed.names[0], rel: "associated with", b: packed.locations[0] });
+      }
+      set({
+        reading: (s.reading ? s.reading + "\n\n" : "") + `--- SOURCE: ${label} ---\n` + text,
+        files: [{ name: label, size: text.length, at: nowStamp() }, ...(s.files || [])],
+        evidence: [
+          {
+            id: evId,
+            title: label,
+            type: "document",
+            at: nowStamp(),
+            source: label,
+            custodian: s.operator || "Investigator",
+            status: "accepted",
+          },
+          ...(s.evidence || []),
+        ],
+        people,
+        locations,
+        findings,
+        events,
+        relations,
+        activity: [{ at: nowStamp(), actor: s.operator || "Investigator", action: "ingest", target: label }, ...(s.activity || [])],
+      });
+      seal(get);
+      return packed;
+    } catch {
+      return { names: [], locations: [], dates: [], findings: [] };
+    }
   },
   stampIngest: async (source, sourceName, method) => {
-    const hash = await sha256(source);
-    const s = get();
-    const ev =
-      s.evidence.find((e) => e.title === sourceName) ||
-      s.evidence.find((e) => e.source === sourceName) ||
-      s.evidence[0];
-    const evidenceId = ev?.id || "";
-    const evidence = s.evidence.map((e) => (e.id === evidenceId || e.title === sourceName ? { ...e, hash } : e));
-    const acq: Acquisition = {
-      id: nid(),
-      method,
-      source: sourceName,
-      operator: s.operator || "Investigator",
-      tool: "KCN-II",
-      version: "IDPC-1.0",
-      writeBlock: "browser-local / no write-back to source",
-      authorization: "operator-initiated",
-      notes: "Working copy hashed after ingest. Not a forensic imager.",
-      sourceHash: hash,
-      acquiredHash: hash,
-      at: nowStamp(),
-    };
-    const prev = s.custody[0]?.hash || "GENESIS";
-    const body = `${ev?.id || "ev"}|accepted|${acq.at}|${prev}|${hash}`;
-    const chain = await sha256(body);
-    const custody: CustodyEvent = {
-      id: nid(),
-      evidenceId: ev?.id || "",
-      action: "accepted",
-      actor: s.operator || "Investigator",
-      at: acq.at,
-      reason: "Source ingested into sealed workspace",
-      custodian: s.operator || "Investigator",
-      prev,
-      hash: chain,
-    };
-    set({
-      evidence,
-      acquisitions: [acq, ...s.acquisitions],
-      custody: [custody, ...s.custody],
-    });
-    seal(get);
+    try {
+      const hash = await sha256(source);
+      const s = get();
+      const ev =
+        s.evidence.find((e) => e.title === sourceName) ||
+        s.evidence.find((e) => e.source === sourceName) ||
+        s.evidence[0];
+      const evidenceId = ev?.id || "";
+      const evidence = s.evidence.map((e) => (e.id === evidenceId || e.title === sourceName ? { ...e, hash } : e));
+      const acq: Acquisition = {
+        id: nid(),
+        method,
+        source: sourceName,
+        operator: s.operator || "Investigator",
+        tool: "KCN-II",
+        version: "IDPC-1.0",
+        writeBlock: "browser-local / no write-back to source",
+        authorization: "operator-initiated",
+        notes: "Working copy hashed after ingest. Not a forensic imager.",
+        sourceHash: hash,
+        acquiredHash: hash,
+        at: nowStamp(),
+      };
+      const prev = s.custody[0]?.hash || "GENESIS";
+      const body = `${ev?.id || "ev"}|accepted|${acq.at}|${prev}|${hash}`;
+      const chain = await sha256(body);
+      const custody: CustodyEvent = {
+        id: nid(),
+        evidenceId: ev?.id || "",
+        action: "accepted",
+        actor: s.operator || "Investigator",
+        at: acq.at,
+        reason: "Source ingested into sealed workspace",
+        custodian: s.operator || "Investigator",
+        prev,
+        hash: chain,
+      };
+      set({
+        evidence,
+        acquisitions: [acq, ...s.acquisitions],
+        custody: [custody, ...s.custody],
+      });
+      seal(get);
+    } catch {
+      /* hash failure must not take down the console */
+    }
   },
   addLookup: (row) => {
     set({ lookups: [row, ...get().lookups] });
@@ -334,8 +400,9 @@ export const useKcn = create<Store>((set, get) => ({
     seal(get);
   },
   addNote: (t) => {
-    set({ notes: [{ id: nid(), t, at: nowStamp() }, ...get().notes] });
-    act(get, set, "note", t.slice(0, 48));
+    const text = String(t || "");
+    set({ notes: [{ id: nid(), t: text, at: nowStamp() }, ...get().notes] });
+    act(get, set, "note", text.slice(0, 48));
     seal(get);
   },
   addCase: (title) => {
@@ -407,26 +474,43 @@ export const useKcn = create<Store>((set, get) => ({
     seal(get);
   },
   addSwarm: (q) => {
+    const id = nid();
     const engines: [string, string][] = [
       ["DuckDuckGo", `https://duckduckgo.com/?q=${encodeURIComponent(q)}`],
+      ["Wikipedia", `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(q)}`],
       ["News", `https://news.google.com/search?q=${encodeURIComponent(q)}`],
-      ["Scholar", `https://scholar.google.com/scholar?q=${encodeURIComponent(q)}`],
+      ["OpenStreetMap", `https://www.openstreetmap.org/search?query=${encodeURIComponent(q)}`],
+      ["Live web + X", "web_search + x_search"],
     ];
-    set({
-      swarmLog: [
-        {
-          q,
-          at: nowStamp(),
-          agents: ["OSINT-A", "OSINT-B", "ALIAS-TRACE", "RECORD-SWEEP", "GEO-CORRELATE"],
-          engines,
-        },
-        ...get().swarmLog,
-      ],
-    });
+    const run: SwarmRun = {
+      id,
+      q,
+      at: nowStamp(),
+      agents: ["OSINT-A", "WIKI-TRACE", "GEO-CORRELATE", "NEWS-SWEEP", "LIVE-WEB"],
+      engines,
+      events: [],
+      hits: [],
+      briefing: "",
+      status: "running",
+    };
+    set({ swarmLog: [run, ...get().swarmLog].slice(0, 40) });
     act(get, set, "osint", q);
     seal(get);
-    engines.forEach(([, u]) => window.open(u, "_blank", "noopener"));
   },
+  upsertSwarm: (run, persist) => {
+    try {
+      const rest = get().swarmLog.filter((s) => s.id !== run.id);
+      set({ swarmLog: [run, ...rest].slice(0, 40) });
+      if (persist) {
+        act(get, set, "osint", run.q);
+        seal(get);
+      }
+    } catch {
+      /* ignore */
+    }
+  },
+  requestSearch: (q) => set({ pendingSearch: String(q || "").trim() }),
+  clearPendingSearch: () => set({ pendingSearch: "" }),
   setVideo: (url) => {
     set({ video: url });
     act(get, set, "video", url);
@@ -436,29 +520,33 @@ export const useKcn = create<Store>((set, get) => ({
     const at = nowStamp();
     const id = nid();
     void (async () => {
-      const s = get();
-      const prev = s.custody[0]?.hash || "GENESIS";
-      const hash = await sha256(`${evidenceId}|${action}|${at}|${prev}|${reason}`);
-      const ev = get();
-      set({
-        custody: [
-          {
-            id,
-            evidenceId,
-            action,
-            actor: ev.operator || "Investigator",
-            at,
-            reason,
-            custodian: ev.operator || "Investigator",
-            prev,
-            hash,
-          },
-          ...ev.custody,
-        ],
-        evidence: ev.evidence.map((e) => (e.id === evidenceId ? { ...e, status: action } : e)),
-      });
-      act(get, set, "custody-" + action, evidenceId);
-      seal(get);
+      try {
+        const s = get();
+        const prev = s.custody[0]?.hash || "GENESIS";
+        const hash = await sha256(`${evidenceId}|${action}|${at}|${prev}|${reason}`);
+        const ev = get();
+        set({
+          custody: [
+            {
+              id,
+              evidenceId,
+              action,
+              actor: ev.operator || "Investigator",
+              at,
+              reason,
+              custodian: ev.operator || "Investigator",
+              prev,
+              hash,
+            },
+            ...ev.custody,
+          ],
+          evidence: ev.evidence.map((e) => (e.id === evidenceId ? { ...e, status: action } : e)),
+        });
+        act(get, set, "custody-" + action, evidenceId);
+        seal(get);
+      } catch {
+        /* custody hash failure must not take down the console */
+      }
     })();
   },
   setVerify: (findingId, status) => {

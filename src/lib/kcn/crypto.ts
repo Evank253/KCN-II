@@ -32,8 +32,9 @@ export function unb64(s: string): Uint8Array {
 }
 
 export async function sha256(data: string | Uint8Array): Promise<string> {
+  if (!cryptoReady()) throw new Error("Web Crypto is not available.");
   const buf = typeof data === "string" ? ENC.encode(data) : data;
-  const digest = await crypto.subtle.digest("SHA-256", src(buf));
+  const digest = await crypto.subtle.digest("SHA-256", src(buf instanceof Uint8Array ? buf : new Uint8Array()));
   return [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 

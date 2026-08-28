@@ -9,6 +9,7 @@ const MONTHS =
   "January|February|March|April|May|June|July|August|September|October|November|December";
 
 export function classifyText(text: string): Packed {
+  try {
   const src = String(text || "");
   const names = [
     ...new Set(src.match(/\b[A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3}\b/g) || []),
@@ -46,9 +47,13 @@ export function classifyText(text: string): Packed {
     .slice(0, 10);
 
   return { names, locations, dates, findings };
+  } catch {
+    return { names: [], locations: [], dates: [], findings: [] };
+  }
 }
 
 export function compressImage(source: CanvasImageSource, maxW = 960): string {
+  try {
   let sw = 960;
   let sh = 720;
   if (source instanceof HTMLVideoElement) {
@@ -69,15 +74,22 @@ export function compressImage(source: CanvasImageSource, maxW = 960): string {
   if (!ctx) return "";
   ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/jpeg", 0.72);
+  } catch {
+    return "";
+  }
 }
 
 export function enhanceDoc(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  const img = ctx.getImageData(0, 0, w, h);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const g = d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11;
-    const v = g > 150 ? 255 : Math.max(0, (g - 40) * 1.35);
-    d[i] = d[i + 1] = d[i + 2] = v;
+  try {
+    const img = ctx.getImageData(0, 0, w, h);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const g = d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11;
+      const v = g > 150 ? 255 : Math.max(0, (g - 40) * 1.35);
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    ctx.putImageData(img, 0, 0);
+  } catch {
+    /* tainted or detached canvas */
   }
-  ctx.putImageData(img, 0, 0);
 }

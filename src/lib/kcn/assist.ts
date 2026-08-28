@@ -1,8 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
 
 export const askCase = createServerFn({ method: "POST" })
   .validator((input: { question: string; digest: string }) => input)
+  .middleware([authMiddleware])
   .handler(async ({ data }) => {
+    try {
     const apiKey = process.env.XAI_API_KEY;
     const question = (data.question || "").trim().slice(0, 500);
     const digest = (data.digest || "").slice(0, 6000);
@@ -39,4 +42,7 @@ export const askCase = createServerFn({ method: "POST" })
     const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const text = body.choices?.[0]?.message?.content?.trim() || "No answer.";
     return { ok: true as const, text };
+    } catch {
+      return { ok: false as const, text: "Assistant is unavailable. Local case analysis is still on the board." };
+    }
   });

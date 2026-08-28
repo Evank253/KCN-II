@@ -1,21 +1,50 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { passphraseScore } from "@/lib/kcn/crypto";
-import { createVault, importSealed, migratePlaintext, unlockVault, vaultExists } from "@/lib/kcn/vault";
+import { vaultKey } from "@/lib/kcn/accounts";
+import { pullAccountVault } from "@/lib/kcn/cloud-vault";
+import { createVault, importSealed, unlockVault, vaultExistsFor } from "@/lib/kcn/vault";
 import { Seal } from "./seal";
 
-type Props = { onOpen: () => void };
+type Props = {
+  onOpen: () => void;
+  userId: string;
+  operatorName: string;
+  email: string;
+};
+type Mode = "unlock" | "create" | "import";
 
-export function VaultGate({ onOpen }: Props) {
-  const exists = vaultExists();
-  const leftover = migratePlaintext();
-  const [mode, setMode] = useState<"unlock" | "create" | "import">(exists ? "unlock" : "create");
+export function VaultGate({ onOpen, userId, operatorName, email }: Props) {
+  const [mode, setMode] = useState<Mode>("create");
+  const [ready, setReady] = useState(false);
+  const [name, setName] = useState(operatorName || "");
   const [pass, setPass] = useState("");
   const [again, setAgain] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [show, setShow] = useState(false);
   const score = passphraseScore(pass);
 
+  useEffect(() => {
+    let live = true;
+    setReady(false);
+    setName(operatorName || email.split("@")[0] || "Investigator");
+    void (async () => {
+      await pullAccountVault(userId);
+      if (!live) return;
+      const exists = vaultExistsFor(userId);
+      setMode(exists ? "unlock" : "create");
+      setReady(true);
+    })();
+    return () => {
+      live = false;
+    };
+  }, [userId, operatorName, email]);
+
   async function create() {
+    if (!name.trim()) {
+      setErr("Type the investigator name.");
+      return;
+    }
     if (!score.ok) {
       setErr(score.label);
       return;
@@ -27,7 +56,7 @@ export function VaultGate({ onOpen }: Props) {
     setBusy(true);
     setErr("");
     try {
-      await createVault(pass, leftover || undefined);
+      await createVault(pass, undefined, name.trim(), userId);
       onOpen();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not seal the vault.");
@@ -40,10 +69,10 @@ export function VaultGate({ onOpen }: Props) {
     setBusy(true);
     setErr("");
     try {
-      await unlockVault(pass);
+      await unlockVault(pass, userId);
       onOpen();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Vault did not open.");
+      setErr(e instanceof Error ? e.message : "Wrong passphrase, or that vault did not open.");
     } finally {
       setBusy(false);
     }
@@ -51,23 +80,42 @@ export function VaultGate({ onOpen }: Props) {
 
   async function onImport(file: File) {
     if (!pass) {
-      setErr("Enter the backup passphrase first.");
+      setErr("Type the backup passphrase first.");
       return;
     }
     setBusy(true);
     setErr("");
     try {
-      await importSealed(await file.text(), pass);
+      await importSealed(await file.text(), pass, name.trim() || operatorName, userId);
       onOpen();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Import failed.");
+      setErr(e instanceof Error ? e.message : "Import failed. Use a sealed backup, not a plain file.");
     } finally {
       setBusy(false);
     }
   }
 
+  function submit() {
+    if (busy) return;
+    if (mode === "unlock") void unlock();
+    else if (mode === "create") void create();
+  }
+
+  const title = mode === "unlock" ? "UNLOCK YOUR VAULT" : mode === "import" ? "RESTORE BACKUP" : "SEAL THIS ACCOUNT";
+
+  if (!ready) {
+    return (
+      <div className="kcn-boot kcn-vault-gate" role="dialog" aria-label="Loading vault">
+        <div className="kcn-boot-scan" />
+        <div className="kcn-boot-stage">
+          <p className="kcn-boot-sub">LOADING ACCOUNT VAULT</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="kcn-boot" role="dialog" aria-label="KCN-II operator vault">
+    <div className="kcn-boot kcn-vault-gate" role="dialog" aria-label="KCN-II operator vault">
       <div className="kcn-boot-scan" />
       <div className="kcn-boot-grid" />
       <div className="kcn-boot-stage">
@@ -80,37 +128,72 @@ export function VaultGate({ onOpen }: Props) {
         <h1 className="kcn-boot-title">
           KCN-<span>II</span>
         </h1>
-        <p className="kcn-boot-sub">OPERATOR VAULT • AES-256-GCM</p>
-        <p className="kcn-tiny kcn-muted mt-3">
-          Investigator files stay on this device, sealed. There is no recovery if the passphrase is lost.
+        <p className="kcn-boot-sub">{title}</p>
+        <p className="kcn-hint mt-3">
+          Signed in as {email || operatorName}. This vault belongs only to this account. Other emails cannot open it.
         </p>
-        {leftover && mode === "create" ? (
-          <p className="kcn-tiny mt-2 text-gold-2">Unsealed files were found. Creating a vault will encrypt and then wipe them.</p>
-        ) : null}
         <div className="kcn-vault-form">
-          <input
-            className="kcn-field"
-            type="password"
-            autoComplete={mode === "create" ? "new-password" : "current-password"}
-            placeholder="Vault passphrase"
-            value={pass}
-            onChange={(e) => setPass(e.target.value)}
-          />
+          {mode === "unlock" ? (
+            <p className="kcn-tiny text-gold-2">
+              Vault passphrase for this account. It is not your sign-in password.
+            </p>
+          ) : null}
+          {mode !== "unlock" && (
+            <input
+              className="kcn-field"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Investigator name"
+              autoComplete="username"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
+            />
+          )}
+          <div className="kcn-pass-row">
+            <input
+              className="kcn-field"
+              type={show ? "text" : "password"}
+              autoFocus
+              autoComplete={mode === "create" ? "new-password" : "current-password"}
+              placeholder={
+                mode === "unlock"
+                  ? "Vault passphrase for this account"
+                  : "Vault passphrase — 12 or more characters"
+              }
+              value={pass}
+              onChange={(e) => setPass(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
+            />
+            <button className="kcn-tiny text-cyan" type="button" onClick={() => setShow((s) => !s)}>
+              {show ? "Hide" : "Show"}
+            </button>
+          </div>
           {mode === "create" && (
             <input
               className="kcn-field"
-              type="password"
+              type={show ? "text" : "password"}
               autoComplete="new-password"
-              placeholder="Confirm passphrase"
+              placeholder="Type it again"
               value={again}
               onChange={(e) => setAgain(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
             />
           )}
           {mode === "create" && pass ? <p className="kcn-tiny kcn-muted">{score.label}</p> : null}
+          {mode === "create" ? (
+            <p className="kcn-tiny kcn-muted">
+              Sign-in password gets you into the account. This passphrase encrypts the case. There is no recovery.
+            </p>
+          ) : null}
           {err ? <p className="kcn-tiny text-gold-2">{err}</p> : null}
           {mode === "unlock" && (
             <button className="kcn-btn gold mt-3 w-full" disabled={busy || !pass} onClick={() => void unlock()}>
-              {busy ? "Opening vault…" : "Unlock vault"}
+              {busy ? "Opening…" : "Open vault"}
             </button>
           )}
           {mode === "create" && (
@@ -120,7 +203,7 @@ export function VaultGate({ onOpen }: Props) {
           )}
           {mode === "import" && (
             <label className="kcn-btn cyan mt-3 w-full">
-              Import sealed backup
+              Choose sealed backup
               <input
                 type="file"
                 accept="application/json,.json"
@@ -133,17 +216,29 @@ export function VaultGate({ onOpen }: Props) {
               />
             </label>
           )}
-          <div className="mt-3 flex flex-wrap justify-center gap-2">
-            {exists && (
-              <button className="kcn-tiny text-cyan underline" type="button" onClick={() => setMode("unlock")}>
-                Unlock
+          <div className="mt-3 flex flex-wrap justify-center gap-3">
+            {vaultExistsFor(userId) || localStorage.getItem(vaultKey(userId)) ? (
+              <button
+                className="kcn-tiny text-cyan underline"
+                type="button"
+                onClick={() => {
+                  setMode("unlock");
+                  setErr("");
+                  setPass("");
+                }}
+              >
+                Unlock existing vault
               </button>
-            )}
-            <button className="kcn-tiny text-cyan underline" type="button" onClick={() => setMode("create")}>
-              New vault
-            </button>
-            <button className="kcn-tiny text-cyan underline" type="button" onClick={() => setMode("import")}>
-              Import backup
+            ) : null}
+            <button
+              className="kcn-tiny text-cyan underline"
+              type="button"
+              onClick={() => {
+                setMode("import");
+                setErr("");
+              }}
+            >
+              Restore backup into this account
             </button>
           </div>
         </div>

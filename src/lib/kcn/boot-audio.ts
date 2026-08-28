@@ -19,20 +19,25 @@ export function createIntelAudio(): IntelAudio {
   let droneGain: GainNode | null = null;
   let droneLfo: OscillatorNode | null = null;
 
-  function ensure() {
-    if (!ctx) {
+  function ensure(): AudioContext | null {
+    if (ctx) return ctx;
+    try {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AC) return null;
       ctx = new AC();
       master = ctx.createGain();
       master.gain.value = muted ? 0 : 0.28;
       master.connect(ctx.destination);
+    } catch {
+      ctx = null;
+      master = null;
     }
     return ctx;
   }
 
   function kick() {
     const c = ensure();
-    if (!master) return c;
+    if (!c || !master) return c;
     try {
       const buf = c.createBuffer(1, 1, c.sampleRate);
       const src = c.createBufferSource();
@@ -42,30 +47,34 @@ export function createIntelAudio(): IntelAudio {
     } catch {
       /* ignore */
     }
-    if (c.state === "suspended") void c.resume();
+    if (c.state === "suspended") void c.resume().catch(() => undefined);
     return c;
   }
 
   function tone(freq: number, dur: number, type: OscillatorType, gain: number, at = 0) {
     const c = kick();
-    if (!master || muted) return;
-    const t0 = c.currentTime + at;
-    const o = c.createOscillator();
-    const g = c.createGain();
-    o.type = type;
-    o.frequency.setValueAtTime(freq, t0);
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(gain, t0 + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    o.connect(g);
-    g.connect(master);
-    o.start(t0);
-    o.stop(t0 + dur + 0.05);
+    if (!c || !master || muted) return;
+    try {
+      const t0 = c.currentTime + at;
+      const o = c.createOscillator();
+      const g = c.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t0);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(gain, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g);
+      g.connect(master);
+      o.start(t0);
+      o.stop(t0 + dur + 0.05);
+    } catch {
+      /* audio graph */
+    }
   }
 
   function noiseBurst(dur: number, gain: number, hp: number) {
     const c = kick();
-    if (!master || muted) return;
+    if (!c || !master || muted) return;
     const n = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate);
     const data = n.getChannelData(0);
     for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
@@ -88,7 +97,7 @@ export function createIntelAudio(): IntelAudio {
     },
     drone(on) {
       const c = kick();
-      if (!master) return;
+      if (!c || !master) return;
       if (on) {
         if (droneOsc) return;
         droneOsc = c.createOscillator();
@@ -129,7 +138,7 @@ export function createIntelAudio(): IntelAudio {
     },
     sweep() {
       const c = kick();
-      if (!master || muted) return;
+      if (!c || !master || muted) return;
       const o = c.createOscillator();
       const g = c.createGain();
       o.type = "sawtooth";
@@ -152,7 +161,7 @@ export function createIntelAudio(): IntelAudio {
     },
     stop() {
       this.drone(false);
-      if (ctx && ctx.state !== "closed") void ctx.suspend();
+      if (ctx && ctx.state !== "closed") void ctx.suspend().catch(() => undefined);
     },
     setMuted(m) {
       muted = m;
