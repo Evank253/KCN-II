@@ -32,21 +32,6 @@ KCN-II is not law enforcement, not a court, and not a classified system. Output 
 - Interview recorder with optional speech-to-text
 - OSINT swarm (public sources) and AI assistant over the case digest
 
-## Quality gate (Kronos)
-
-KCN-II is released only after a Kronos pass:
-
-1. **Kronos-Vibe-Coder** — analyze, debug (typecheck), test, deploy check, security, review, report
-2. **kcn-vibe-developer** — package name, license, startup, no `.env` secrets
-3. **kcn-preflight** — secret scan, negative-coding scan, PASS/BLOCK verdict
-
-```bash
-npm install
-npm run kronos
-```
-
-Latest local verdict: **PASS** (0 issues). Evidence: [KRONOS_GATE_REPORT.md](KRONOS_GATE_REPORT.md).
-
 IDPC-1.0 live controls are run in-console under **Vault & certification**. They are operator-attested device tests, not a third-party ISO/SOC/CJIS ATO.
 
 ## Run
