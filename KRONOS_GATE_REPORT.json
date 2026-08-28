@@ -1,0 +1,59 @@
+{
+  "product": "KCN-II",
+  "pipeline": "Kronos-Vibe-Coder + kcn-vibe-developer + kcn-preflight",
+  "at": "2026-08-28T07:04:10.270Z",
+  "verdict": "PASS",
+  "stages": [
+    {
+      "name": "analyze",
+      "ok": true,
+      "detail": "159 files · 20 product files · kcn modules present"
+    },
+    {
+      "name": "security",
+      "ok": true,
+      "detail": "0 secret hits · 0 negative-coding hits in product source"
+    },
+    {
+      "name": "debug",
+      "ok": true,
+      "detail": "tsc --noEmit clean"
+    },
+    {
+      "name": "test",
+      "ok": true,
+      "detail": "lookup-gate, AES-GCM live probe, passphrase policy, classifier"
+    },
+    {
+      "name": "deploy",
+      "ok": true,
+      "detail": "kcn-ii package, LICENSE, startup.sh, no .env — ready for GitHub + preview"
+    },
+    {
+      "name": "ai_review",
+      "ok": true,
+      "detail": "No HIGH negative-coding in product source"
+    }
+  ],
+  "issue_count": 0,
+  "severity_counts": {},
+  "issues": [],
+  "language_distribution": {
+    ".lock": 1,
+    "none": 4,
+    ".json": 8,
+    ".mjs": 52,
+    ".png": 6,
+    ".svg": 10,
+    ".css": 4,
+    ".js": 5,
+    ".jpg": 2,
+    ".md": 6,
+    ".sql": 1,
+    ".mts": 1,
+    ".html": 1,
+    ".ts": 41,
+    ".tsx": 16,
+    ".sh": 1
+  }
+}

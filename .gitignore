@@ -1,0 +1,16 @@
+node_modules/
+.project_id
+.github_repo
+.env
+.env.*
+.grok/
+.vercel/
+artifacts/
+screenshots/
+dist/
+.output/
+.nitro/
+.tanstack/
+*.log
+.node_modules.lock
+AGENTS.md

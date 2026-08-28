@@ -1,0 +1,64 @@
+KCN-II PROPRIETARY SOFTWARE LICENSE
+Version 1.2 — Effective 27 August 2026
+Copyright (c) 2026 KCN / Ketchum's Intelligent Investigator. All rights reserved.
+
+This license, the User Agreement, and the Legal Agreement (together, the "Legal
+Pack") govern KCN-II, including source, design, marks, motion, audio, documents,
+and architecture (the "Software"). Using KCN-II means you accept all three.
+
+1. GRANT
+The KCN-II operator ("Licensor") grants you a limited, personal, non-exclusive,
+non-transferable, non-sublicensable, revocable license to access and use the
+live KCN-II console for lawful investigative research, case organization, and
+source review. No other rights are granted.
+
+2. YOU MAY NOT
+Without Licensor's prior written permission you may not:
+
+  a. Copy, fork, clone for distribution, sublicense, sell, rent, lease, or
+     publicly redistribute the Software.
+  b. Reverse engineer, decompile, extract, or disclose proprietary cognitive
+     architecture, classification methods, lookup pipelines, or branding for a
+     competing product.
+  c. Remove or alter copyright, trademark, proprietary, or attribution notices.
+  d. Use the Software to harass, dox, threaten, stalk, or commit any crime.
+  e. Represent KCN-II output as a court finding, law-enforcement conclusion,
+     medical-examiner finding, or official government intelligence product.
+  f. Impersonate KCN, Licensor, police, a court, or any government agency.
+  g. Circumvent access, rate, or safety controls.
+
+3. OWNERSHIP
+KCN, KCN-II, Ketchum's Intelligent Investigator, the seal, gold-and-navy console
+design, boot sequence, and related marks remain Licensor property. This license
+is not a sale. Feedback you send may be used by Licensor without obligation.
+
+4. CONFIDENTIAL ARCHITECTURE
+Non-public methods, prompts, classifiers, and system design are proprietary.
+You will not publish or productize them.
+
+5. THIRD-PARTY SERVICES
+Lookups and public-source links may use independent AI and search providers.
+Those services have their own terms. Licensor does not control them.
+
+6. TERMINATION
+This license ends if you breach it, if Licensor withdraws access, or if you
+stop using the Software. You must then stop use and destroy copies you control.
+Sections 3, 4, 7, 8, and 9 survive.
+
+7. NO WARRANTY
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, TITLE, QUIET ENJOYMENT, AND NON-INFRINGEMENT. LICENSOR DOES NOT
+WARRANT THAT OUTPUT IS ACCURATE, COMPLETE, OR FIT FOR LEGAL, MEDICAL, OR
+OPERATIONAL DECISIONS.
+
+8. LIABILITY
+Liability is limited as stated in LEGAL.md. In any conflict, LEGAL.md controls
+on damages; this License controls on IP and use rights.
+
+9. LAW
+Governed by the laws of the State of Washington, United States, except where
+mandatory consumer law requires otherwise. Venue: courts located in Washington.
+
+See USER_AGREEMENT.md and LEGAL.md. The Legal Pack is the entire agreement for
+the Software.
