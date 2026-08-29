@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { classifyText } from "./classify";
+import { classifyText, looksLikePerson } from "./classify";
 import { persistCase } from "./vault";
 import { sha256 } from "./crypto";
 
@@ -16,6 +16,10 @@ export type Evidence = {
   custodian?: string;
   status?: string;
   hash?: string;
+  mediaId?: string;
+  bytes?: number;
+  mime?: string;
+  duration?: string;
 };
 export type EventItem = { id: string; when: string; what: string };
 export type Place = { id: string; name: string; at: string; source: string };
@@ -199,6 +203,7 @@ type Store = KcnState & {
   setOperator: (v: string) => void;
   setActiveCase: (id: string) => void;
   fileExtraction: (text: string, sourceName: string) => ReturnType<typeof classifyText>;
+  fileSearchHits: (query: string, hits: SearchHit[], briefing?: string) => void;
   stampIngest: (source: string | Uint8Array, sourceName: string, method: string) => Promise<void>;
   addLookup: (row: LookupRec) => void;
   addScan: (row: ScanRec) => void;
@@ -289,6 +294,12 @@ export const useKcn = create<Store>((set, get) => ({
           locations.unshift({ id: nid(), name: place, at: nowStamp(), source: label });
         }
       });
+      const orgs = [...(s.orgs || [])];
+      (packed.orgs || []).forEach((name) => {
+        if (!orgs.some((o) => o.name.toLowerCase() === name.toLowerCase())) {
+          orgs.unshift({ id: nid(), name, at: nowStamp() });
+        }
+      });
       const evId = nid();
       const findings = [
         ...packed.findings.map((f) => ({
@@ -308,15 +319,32 @@ export const useKcn = create<Store>((set, get) => ({
           when: d,
           what: "Date mark from " + label,
         })),
+        ...(packed.times || []).map((t) => ({
+          id: nid(),
+          when: t,
+          what: "Time mark from " + label,
+        })),
         ...(s.events || []),
       ];
       const relations = [...(s.relations || [])];
       if (packed.names.length && packed.locations.length) {
         relations.push({ a: packed.names[0], rel: "associated with", b: packed.locations[0] });
       }
+      if (packed.names[0] && packed.orgs?.[0]) {
+        relations.push({ a: packed.names[0], rel: "linked to", b: packed.orgs[0] });
+      }
+      const extras = (packed.things || []).map((t) => ({
+        id: nid(),
+        title: t,
+        type: "item",
+        at: nowStamp(),
+        source: label,
+        custodian: s.operator || "Investigator",
+        status: "accepted",
+      }));
       set({
-        reading: (s.reading ? s.reading + "\n\n" : "") + `--- SOURCE: ${label} ---\n` + text,
-        files: [{ name: label, size: text.length, at: nowStamp() }, ...(s.files || [])],
+        reading: (s.reading ? s.reading + "\n\n" : "") + `--- SOURCE: ${label} ---\n` + String(text || "").slice(0, 14000),
+        files: [{ name: label, size: String(text || "").length, at: nowStamp() }, ...(s.files || [])],
         evidence: [
           {
             id: evId,
@@ -327,10 +355,12 @@ export const useKcn = create<Store>((set, get) => ({
             custodian: s.operator || "Investigator",
             status: "accepted",
           },
+          ...extras,
           ...(s.evidence || []),
         ],
         people,
         locations,
+        orgs,
         findings,
         events,
         relations,
@@ -339,7 +369,157 @@ export const useKcn = create<Store>((set, get) => ({
       seal(get);
       return packed;
     } catch {
-      return { names: [], locations: [], dates: [], findings: [] };
+      return { names: [], locations: [], dates: [], times: [], orgs: [], things: [], findings: [] };
+    }
+  },
+  fileSearchHits: (query, hits, briefing) => {
+    try {
+      const q = String(query || "").trim();
+      if (!q) return;
+      const label = "OSINT " + q;
+      const block = [
+        `OSINT sweep: ${q}`,
+        ...(hits || []).map((h) => `${h.title}\n${h.snippet || ""}\n${h.url}`),
+        briefing ? `BRIEFING:\n${briefing}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+        .slice(0, 14000);
+      const packed = classifyText(block);
+      const s = get();
+      const people = [...(s.people || [])];
+      packed.names.forEach((name) => {
+        if (!looksLikePerson(name)) return;
+        if (!people.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+          people.unshift({ id: nid(), name, role: "From public source · " + label });
+        }
+      });
+      if (looksLikePerson(q) && !people.some((p) => p.name.toLowerCase() === q.toLowerCase())) {
+        people.unshift({ id: nid(), name: q, role: "Search subject" });
+      }
+      (hits || []).forEach((h) => {
+        if (!/wikipedia|wikidata/i.test(`${h.source} ${h.url}`)) return;
+        const title = (h.title || "").trim();
+        if (looksLikePerson(title) && !people.some((p) => p.name.toLowerCase() === title.toLowerCase())) {
+          people.unshift({ id: nid(), name: title, role: "From public source · " + h.source });
+        }
+      });
+      const locations = [...(s.locations || [])];
+      packed.locations.forEach((place) => {
+        if (!locations.some((l) => l.name.toLowerCase() === place.toLowerCase())) {
+          locations.unshift({ id: nid(), name: place, at: nowStamp(), source: label });
+        }
+      });
+      (hits || []).forEach((h) => {
+        if (h.source !== "OpenStreetMap" && !/openstreetmap/i.test(h.url || "")) return;
+        const place = (h.title || "").split(",")[0].trim();
+        if (place && !locations.some((l) => l.name.toLowerCase() === place.toLowerCase())) {
+          locations.unshift({ id: nid(), name: place, at: nowStamp(), source: h.url || label });
+        }
+      });
+      const orgs = [...(s.orgs || [])];
+      (packed.orgs || []).forEach((name) => {
+        if (!orgs.some((o) => o.name.toLowerCase() === name.toLowerCase())) {
+          orgs.unshift({ id: nid(), name, at: nowStamp() });
+        }
+      });
+      const findings = [...(s.findings || [])];
+      packed.findings.forEach((f) => {
+        if (!findings.some((x) => x.t.toLowerCase() === f.toLowerCase())) {
+          findings.unshift({ id: nid(), t: f, at: nowStamp(), source: label, verify: "generated" });
+        }
+      });
+      if (!findings.some((f) => f.t === "Public sweep filed: " + q)) {
+        findings.unshift({
+          id: nid(),
+          t: `Public sweep filed: ${q} · ${(hits || []).length} sources`,
+          at: nowStamp(),
+          source: label,
+          verify: "generated",
+        });
+      }
+      const events = [...(s.events || [])];
+      if (!events.some((e) => e.what === "OSINT sweep: " + q)) {
+        events.unshift({ id: nid(), when: nowStamp(), what: "OSINT sweep: " + q });
+      }
+      packed.dates.forEach((d) => {
+        if (!events.some((e) => e.when === d && e.what.includes(label))) {
+          events.unshift({ id: nid(), when: d, what: "Date mark from " + label });
+        }
+      });
+      (packed.times || []).forEach((t) => {
+        if (!events.some((e) => e.when === t && e.what.includes(label))) {
+          events.unshift({ id: nid(), when: t, what: "Time mark from " + label });
+        }
+      });
+      const relations = [...(s.relations || [])];
+      const link = (a: string, rel: string, b: string) => {
+        if (!a || !b) return;
+        if (relations.some((r) => r.a === a && r.b === b)) return;
+        relations.push({ a, rel, b });
+      };
+      packed.names.slice(0, 4).forEach((n) => {
+        packed.locations.slice(0, 3).forEach((p) => link(n, "associated with", p));
+        packed.orgs.slice(0, 2).forEach((o) => link(n, "linked to", o));
+        packed.dates.slice(0, 2).forEach((d) => link(n, "dated", d));
+        packed.things.slice(0, 2).forEach((th) => link(n, "linked to", th));
+      });
+      const evidence = [...(s.evidence || [])];
+      if (!evidence.some((e) => e.title === label)) {
+        evidence.unshift({
+          id: nid(),
+          title: label,
+          type: "osint",
+          at: nowStamp(),
+          source: label,
+          custodian: s.operator || "Investigator",
+          status: "accepted",
+        });
+      }
+      (hits || []).forEach((h) => {
+        if (!h.title) return;
+        if (evidence.some((e) => e.source === h.url || (e.title === h.title && e.type === "osint"))) return;
+        evidence.unshift({
+          id: nid(),
+          title: h.title,
+          type: "osint",
+          at: nowStamp(),
+          source: h.url,
+          custodian: s.operator || "Investigator",
+          status: "accepted",
+        });
+      });
+      const extras = (packed.things || [])
+        .filter((t) => !evidence.some((e) => e.title === t))
+        .map((t) => ({
+          id: nid(),
+          title: t,
+          type: "item",
+          at: nowStamp(),
+          source: label,
+          custodian: s.operator || "Investigator",
+          status: "accepted",
+        }));
+      set({
+        reading: s.reading.includes(`--- SOURCE: ${label} ---`)
+          ? s.reading
+          : (s.reading ? s.reading + "\n\n" : "") + `--- SOURCE: ${label} ---\n` + block,
+        files: s.files.some((f) => f.name === label) ? s.files : [{ name: label, size: block.length, at: nowStamp() }, ...s.files],
+        evidence: [...extras, ...evidence],
+        people,
+        locations,
+        orgs,
+        findings,
+        events,
+        relations,
+        activity:
+          s.activity[0]?.action === "osint" && s.activity[0]?.target === q
+            ? s.activity
+            : [{ at: nowStamp(), actor: s.operator || "Investigator", action: "osint", target: q }, ...(s.activity || [])],
+      });
+      seal(get);
+    } catch {
+      /* keep the sweep even if filing fails */
     }
   },
   stampIngest: async (source, sourceName, method) => {

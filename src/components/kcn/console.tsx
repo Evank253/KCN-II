@@ -13,12 +13,14 @@ import { signOut } from "@/lib/auth/client";
 import { Link } from "@tanstack/react-router";
 import { BootSequence } from "./boot-sequence";
 import { CertificationDesk } from "./certification-desk";
+import { ingestSource } from "@/lib/kcn/ingest";
 import {
   AcquireDesk,
   ActivityDesk,
   CasesDesk,
   ContradictDesk,
   CustodyDesk,
+  EvidenceDesk,
   InterviewDesk,
   OrgDesk,
   ReportDesk,
@@ -26,6 +28,7 @@ import {
   SearchDesk,
   SwarmDesk,
   VerifyDesk,
+  VideoDesk,
 } from "./desks";
 import { LegalDesk } from "./legal-desk";
 import { ScannerSheet } from "./scanner-sheet";
@@ -100,8 +103,8 @@ const OPEN_DEFAULT: Record<string, boolean> = {
   Start: true,
   Collect: true,
   Case: true,
-  Analyze: false,
-  Preserve: false,
+  Analyze: true,
+  Preserve: true,
   Output: false,
   System: false,
 };
@@ -289,33 +292,12 @@ export function KcnConsole() {
   async function ingestFiles(files: FileList | File[]) {
     for (const f of [...files]) {
       try {
-        if ((f.type || "").startsWith("image/")) {
-          setScanOpen(true);
-          ping("Open the scanner to look this photo up.");
-          continue;
-        }
-        if ((f.type || "").startsWith("audio/")) {
-          store.addEvidence(f.name, "audio");
-          const bytes = new Uint8Array(await f.arrayBuffer());
-          void store.stampIngest(bytes, f.name, "audio-upload").catch(() => undefined);
-          ping("Audio filed as evidence. Use Interview to transcribe spoken statements.");
-          continue;
-        }
-        if ((f.type || "").startsWith("video/")) {
-          store.addEvidence(f.name, "video");
-          const bytes = new Uint8Array(await f.arrayBuffer());
-          void store.stampIngest(bytes, f.name, "video-upload").catch(() => undefined);
-          ping("Video filed as evidence. Add notes from what you observe.");
-          continue;
-        }
-        const text = await f.text();
-        store.fileExtraction(text, f.name);
-        void store.stampIngest(text, f.name, "file-upload").catch(() => undefined);
+        const r = await ingestSource(f);
+        ping(r.summary);
       } catch {
         ping("Could not read " + (f.name || "that file") + ".");
       }
     }
-    ping("Sources locked into the case file.");
   }
 
   function lockNow(msg?: string) {
@@ -495,12 +477,13 @@ export function KcnConsole() {
       return (
         <section>
           <h2 className="kcn-title">Files</h2>
-          <p className="kcn-hint">Add a document or paste text. Photos belong in Scan.</p>
+          <p className="kcn-hint">Add a photo, video, voice memo, PDF, or text. KCN-II files it as evidence and pulls names, places, dates, and findings.</p>
           <label className="kcn-btn cyan mb-3 inline-flex">
             Add files
             <input
               type="file"
               multiple
+              accept="image/*,video/*,audio/*,.pdf,.docx,.txt,.md,.csv,.json,.webm"
               className="hidden"
               onChange={(e) => {
                 if (e.target.files) void ingestFiles(e.target.files);
@@ -564,7 +547,7 @@ export function KcnConsole() {
       return <ListForm title="Findings" hint="Leads to review. Not conclusions." placeholder="Finding or lead" onAdd={(t) => store.addFinding(t)} items={store.findings.map((f) => ({ t: f.t, s: `${f.verify || "generated"} · ${f.source}` }))} />;
     }
     if (mod === "evidence") {
-      return <ListForm title="Evidence" hint="What you have in hand." placeholder="Evidence title" onAdd={(t) => store.addEvidence(t, "document")} items={store.evidence.map((e) => ({ t: e.title, s: e.type }))} />;
+      return <EvidenceDesk onIngest={(files) => void ingestFiles(files)} />;
     }
     if (mod === "timeline") {
       return <ListForm title="Timeline" hint="What happened, in order." placeholder="Event" onAdd={(t) => store.addEvent("", t)} items={store.events.map((e) => ({ t: e.what, s: String(e.when) }))} />;
@@ -573,13 +556,7 @@ export function KcnConsole() {
       return <SearchDesk />;
     }
     if (mod === "video") {
-      return (
-        <section>
-          <h2 className="kcn-title">Video</h2>
-          <p className="kcn-hint">Paste a public video link to file it.</p>
-          <VideoBox url={store.video} onLock={(u) => { store.setVideo(u); store.addEvidence("Linked video", "video"); }} />
-        </section>
-      );
+      return <VideoDesk onIngest={(files) => void ingestFiles(files)} />;
     }
     if (mod === "orgs") {
       return <OrgDesk />;
@@ -615,7 +592,7 @@ export function KcnConsole() {
       return (
         <section>
           <h2 className="kcn-title">Links</h2>
-          <p className="kcn-hint">Who is connected to whom.</p>
+          <p className="kcn-hint">People, places, dates, times, and things pulled from sources — linked as an audit trail.</p>
           <RelationBox />
         </section>
       );
@@ -741,6 +718,7 @@ export function KcnConsole() {
               <input
                 type="file"
                 multiple
+                accept="image/*,video/*,audio/*,.pdf,.docx,.txt,.md,.csv,.json,.webm"
                 className="hidden"
                 onChange={(e) => {
                   if (e.target.files) void ingestFiles(e.target.files);
@@ -1172,38 +1150,20 @@ function TwoField({
   );
 }
 
-function VideoBox({ url, onLock }: { url: string; onLock: (u: string) => void }) {
-  const [v, setV] = useState(url);
-  const yt = typeof url === "string" ? url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/) : null;
-  return (
-    <>
-      <div className="mb-3 flex gap-2">
-        <input className="kcn-field flex-1" value={v} onChange={(e) => setV(e.target.value)} placeholder="Paste a public video URL" />
-        <button className="kcn-btn cyan" onClick={() => onLock(v.trim())}>
-          Save
-        </button>
-      </div>
-      {yt ? (
-        <iframe
-          title="Video evidence"
-          className="h-80 w-full rounded-xl"
-          src={`https://www.youtube.com/embed/${yt[1]}`}
-          allowFullScreen
-        />
-      ) : (
-        <div className="kcn-card kcn-muted">{url || "No linked video."}</div>
-      )}
-    </>
-  );
-}
-
 function RelationBox() {
   const people = useKcn((s) => s.people);
+  const locations = useKcn((s) => s.locations);
+  const orgs = useKcn((s) => s.orgs);
+  const events = useKcn((s) => s.events);
+  const evidence = useKcn((s) => s.evidence);
   const relations = useKcn((s) => s.relations);
   const addRelation = useKcn((s) => s.addRelation);
   const [a, setA] = useState("");
   const [rel, setRel] = useState("linked to");
   const [b, setB] = useState("");
+  const dates = events.filter((e) => /date mark|time mark/i.test(e.what));
+  const things = evidence.filter((e) => e.type === "item");
+  const empty = !people.length && !locations.length && !relations.length && !dates.length;
   return (
     <>
       <div className="mb-3 flex flex-wrap gap-2">
@@ -1222,18 +1182,56 @@ function RelationBox() {
           Link
         </button>
       </div>
+      <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+        <div className="kcn-item">
+          <b>People</b>
+          {people.slice(0, 8).map((p) => (
+            <div key={p.id} className="kcn-tiny">
+              {p.name}
+            </div>
+          ))}
+          {!people.length && <div className="kcn-tiny kcn-muted">None yet</div>}
+        </div>
+        <div className="kcn-item">
+          <b>Places</b>
+          {locations.slice(0, 8).map((p) => (
+            <div key={p.id} className="kcn-tiny">
+              {p.name}
+            </div>
+          ))}
+          {!locations.length && <div className="kcn-tiny kcn-muted">None yet</div>}
+        </div>
+        <div className="kcn-item">
+          <b>Dates / times</b>
+          {dates.slice(0, 8).map((e) => (
+            <div key={e.id} className="kcn-tiny">
+              {e.when}
+            </div>
+          ))}
+          {!dates.length && <div className="kcn-tiny kcn-muted">None yet</div>}
+        </div>
+        <div className="kcn-item">
+          <b>Things / orgs</b>
+          {orgs.slice(0, 4).map((o) => (
+            <div key={o.id} className="kcn-tiny">
+              {o.name}
+            </div>
+          ))}
+          {things.slice(0, 4).map((t) => (
+            <div key={t.id} className="kcn-tiny">
+              {t.title}
+            </div>
+          ))}
+          {!orgs.length && !things.length && <div className="kcn-tiny kcn-muted">None yet</div>}
+        </div>
+      </div>
       <div className="kcn-card min-h-40">
-        {people.map((p) => (
-          <div key={p.id} className="kcn-tiny">
-            {p.name} — {p.role}
-          </div>
-        ))}
         {relations.map((r, i) => (
           <div key={i} className="kcn-tiny text-gold-2">
             {r.a} {r.rel} {r.b}
           </div>
         ))}
-        {people.length === 0 && <div className="kcn-empty">Add people first, then link them.</div>}
+        {empty && <div className="kcn-empty">Ingest a file or run a search. Links fill in from people, places, dates, and things.</div>}
       </div>
     </>
   );

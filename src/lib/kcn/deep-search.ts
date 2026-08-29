@@ -159,29 +159,64 @@ function decodeDdgHref(href: string) {
 }
 
 async function searchDdg(q: string): Promise<SearchHit[]> {
-  const instant = await grab(
+  const instantP = grab(
     `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&no_redirect=1&skip_disambig=1`,
+    {},
+    4000,
   ).catch(() => "");
+  const htmlP = grab(
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `q=${encodeURIComponent(q)}&b=`,
+    },
+    4000,
+  ).catch(() => "");
+  const [instant, html] = await Promise.all([instantP, htmlP]);
   const fromInstant = instant ? hitsFromDdgInstant(instant) : [];
-  const html = await grab(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: `q=${encodeURIComponent(q)}&b=`,
-  }).catch(() =>
-    grab(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`).catch(() => ""),
-  );
+  if (!fromInstant.length && instant) {
+    try {
+      const j = JSON.parse(instant) as { Heading?: string; AbstractURL?: string; AbstractText?: string };
+      if (j.Heading && j.AbstractURL) {
+        fromInstant.push({
+          title: j.Heading,
+          url: j.AbstractURL,
+          snippet: strip(j.AbstractText || "DuckDuckGo identity card"),
+          source: "DuckDuckGo",
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   const fromHtml = html ? hitsFromDdgHtml(html) : [];
   return dedupe([...fromInstant, ...fromHtml]).slice(0, 10);
 }
 
 async function searchWikipedia(q: string): Promise<SearchHit[]> {
   const raw = await grab(
+    `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&srlimit=8&utf8=1&format=json&origin=*`,
+  );
+  const parsed = JSON.parse(raw) as {
+    query?: { search?: Array<{ title?: string; snippet?: string; pageid?: number }> };
+  };
+  const rows = parsed.query?.search || [];
+  if (rows.length) {
+    return rows.map((r) => ({
+      title: r.title || "Wikipedia",
+      url: `https://en.wikipedia.org/wiki/${encodeURIComponent((r.title || "").replace(/ /g, "_"))}`,
+      snippet: strip(r.snippet || ""),
+      source: "Wikipedia",
+    }));
+  }
+  const open = await grab(
     `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(q)}&limit=8&namespace=0&format=json&origin=*`,
   );
-  const parsed = JSON.parse(raw) as [string, string[], string[], string[]];
-  const titles = parsed[1] || [];
-  const desc = parsed[2] || [];
-  const urls = parsed[3] || [];
+  const parsedOpen = JSON.parse(open) as [string, string[], string[], string[]];
+  const titles = parsedOpen[1] || [];
+  const desc = parsedOpen[2] || [];
+  const urls = parsedOpen[3] || [];
   return titles.map((title, i) => ({
     title,
     url: urls[i] || `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`,
@@ -374,6 +409,7 @@ async function grokDeep(
   const tryChat = async () => {
     const res = await fetch("https://api.x.ai/v1/chat/completions", {
       method: "POST",
+      signal: AbortSignal.timeout(22000),
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: "grok-4.5",
@@ -392,6 +428,7 @@ async function grokDeep(
   const tryResponses = async () => {
     const res = await fetch("https://api.x.ai/v1/responses", {
       method: "POST",
+      signal: AbortSignal.timeout(22000),
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: "grok-4.5",
@@ -505,31 +542,22 @@ export function localPlan(query: string, focus: SwarmFocus, hint: CaseHint): Con
   };
 
   if (news) add("NEWS-SWEEP", "news", q, "Operator asked for news first.");
-  add("OSINT-A", "ddg", q, "Broad public web for the subject.");
-  add("OSINT-B", "ddg", `"${q}"`, "Exact-phrase lock so the name is not split.");
   add("WIKI-TRACE", "wikipedia", q, "Identity / place page if one exists.");
   add("ENTITY-REG", "wikidata", q, "Structured entity registry.");
+  add("GEO-CORRELATE", "maps", q, "Ground the subject on a map.");
+  add("NEWS-SWEEP", "news", q, "Public reporting.");
+  add("OSINT-A", "ddg", q, "Broad public web for the subject.");
   if (person) {
     add("NEWS-SWEEP", "news", `${q} news`, "Person in public reporting.");
-    add("ALIAS-TRACE", "ddg", `${q} aka OR alias OR "also known as"`, "Public aliases and other names.");
   }
-  if (place) {
-    add("GEO-CORRELATE", "maps", q, "Ground the subject on a map.");
+  if (place && !person) {
     add("NEWS-SWEEP", "news", `${q} news`, "Place in public reporting.");
   }
   if (org) {
     add("NEWS-SWEEP", "news", `${q} company OR organization`, "Org in public reporting.");
-    add("OSINT-C", "ddg", `${q} site:gov OR site:edu`, "Public gov/edu traces only.");
   }
-  if (!person && !place && !org && !news) {
-    add("GEO-CORRELATE", "maps", q, "Check whether this is a place.");
-    add("NEWS-SWEEP", "news", q, "Check public news.");
-  }
-  (hint.places || []).slice(0, 2).forEach((p) => {
+  (hint.places || []).slice(0, 1).forEach((p) => {
     if (p && p.toLowerCase() !== q.toLowerCase()) add("GEO-CORRELATE", "maps", p, `Case place: ${p}`);
-  });
-  (hint.people || []).slice(0, 2).forEach((p) => {
-    if (p && p.toLowerCase() !== q.toLowerCase()) add("ALIAS-TRACE", "ddg", p, `Case person: ${p}`);
   });
   add("LIVE-WEB", "grok", q, "Deep live web and X after public engines.");
 

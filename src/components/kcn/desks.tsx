@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { downloadText } from "@/lib/kcn/legal-copy";
 import { VERIFY_FLOW, buildReport, findContradictions, resolveEntities, swarmBrief } from "@/lib/kcn/intel";
-import { nowStamp, useKcn, type SearchEvent, type SwarmRun, type VerifyStatus } from "@/lib/kcn/store";
-import { liveGrokSearch, localPlan, planSwarm, probeSource, retaskSwarm, type AgentTask, type SwarmFocus } from "@/lib/kcn/deep-search";
+import { nowStamp, useKcn, type Evidence, type SearchEvent, type SwarmRun, type VerifyStatus } from "@/lib/kcn/store";
+import { liveGrokSearch, localPlan, probeSource, retaskSwarm, type AgentTask, type SwarmFocus } from "@/lib/kcn/deep-search";
+import { getMedia } from "@/lib/kcn/media";
 
 export function ResolveDesk() {
   const people = useKcn((s) => s.people);
@@ -291,7 +292,6 @@ export function ActivityDesk() {
 export function InterviewDesk() {
   const fileExtraction = useKcn((s) => s.fileExtraction);
   const stampIngest = useKcn((s) => s.stampIngest);
-  const addEvidence = useKcn((s) => s.addEvidence);
   const recRef = useRef<MediaRecorder | null>(null);
   const chunks = useRef<BlobPart[]>([]);
   const [status, setStatus] = useState("Recorder idle.");
@@ -331,18 +331,16 @@ export function InterviewDesk() {
       rec.onstop = () => {
         media.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunks.current, { type: rec.mimeType || "audio/webm" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "KCN-II-interview.webm";
-        a.click();
-        addEvidence("Interview recording " + nowStamp(), "audio");
+        const file = new File([blob], `interview-${Date.now()}.webm`, { type: blob.type || "audio/webm" });
+        void import("@/lib/kcn/ingest")
+          .then(({ ingestSource }) => ingestSource(file))
+          .catch(() => undefined);
         if (liveRef.current.trim()) {
           const label = "Interview transcript " + nowStamp();
           fileExtraction(liveRef.current, label);
           void stampIngest(liveRef.current, label, "interview-audio");
         }
-        setStatus("Interview captured. Audio downloaded. Transcript filed if speech-to-text ran.");
+        setStatus("Interview captured and stored in Evidence.");
       };
       rec.start();
       recRef.current = rec;
@@ -535,30 +533,41 @@ export function SearchDesk() {
     setLive(current);
     store.upsertSwarm(current);
 
-    let plan = sketch;
-    try {
-      plan = await planSwarm({ data: { query, focus, hint } });
-    } catch {
-      plan = sketch;
-    }
-    if (abort.current) {
-      setBusy(false);
-      return;
-    }
-    current = {
-      ...current,
-      intent: plan.intent,
-      agents: plan.tasks.map((t) => t.agent),
-      engines: plan.tasks.map((t) => [t.agent, t.where] as [string, string]),
-      tasks: plan.tasks,
+    const hitBag: { title: string; url: string; snippet: string; source: string }[] = [];
+    const addHits = (more: typeof hitBag) => {
+      for (const h of more || []) {
+        const k = (h.url || h.title || "").toLowerCase();
+        if (!k || hitBag.some((x) => (x.url || x.title).toLowerCase() === k)) continue;
+        hitBag.push(h);
+      }
+      current = { ...current, hits: hitBag.slice() };
+      setLive({ ...current });
     };
-    setIntent(plan.intent);
-    setTasks(plan.tasks);
+
+    const grokPromise = liveGrokSearch({ data: { query, hits: [] } })
+      .then((g) => {
+        if (g.hits?.length) {
+          addHits(g.hits);
+          g.hits.forEach((h) => {
+            push({ at: tick(), kind: "hit", source: "LIVE-WEB", text: h.title, url: h.url });
+          });
+        }
+        if (g.text) current = { ...current, briefing: g.text };
+        return g;
+      })
+      .catch(() => ({
+        ok: false as const,
+        text: "",
+        hits: [] as typeof hitBag,
+        error: "Live web did not return.",
+      }));
+
+    const plan = sketch;
     push({
       at: tick(),
       kind: "control",
       source: "CONTROLLER",
-      text: `${plan.from === "ai" ? "AI controller" : "Local controller"}: ${plan.intent}`,
+      text: `${plan.intent} Hitting Wikipedia, Wikidata, maps, news, and the live web together.`,
     });
     plan.tasks.forEach((t) => {
       push({
@@ -583,9 +592,9 @@ export function SearchDesk() {
       });
       try {
         if (t.source === "grok") {
-          const g = await liveGrokSearch({ data: { query: t.query, hits: current.hits } });
+          const g = await liveGrokSearch({ data: { query: t.query, hits: hitBag.slice() } });
           if (g.hits?.length) {
-            current = { ...current, hits: [...current.hits, ...g.hits] };
+            addHits(g.hits);
             t.hits = g.hits.length;
             t.status = "hit";
             g.hits.forEach((h) => {
@@ -600,7 +609,7 @@ export function SearchDesk() {
         } else {
           const r = await probeSource({ data: { source: t.source, query: t.query } });
           if (r.hits?.length) {
-            current = { ...current, hits: [...current.hits, ...r.hits] };
+            addHits(r.hits);
             t.hits = r.hits.length;
             t.status = "hit";
             r.hits.forEach((h) => {
@@ -616,9 +625,9 @@ export function SearchDesk() {
             t.status = "empty";
             push({
               at: tick(),
-              kind: "fail",
+              kind: "note",
               source: t.agent,
-              text: r.error || "No hits",
+              text: r.error || "No pages from this engine",
               url: r.where || t.where,
             });
           }
@@ -634,12 +643,23 @@ export function SearchDesk() {
 
     const wave1 = plan.tasks.filter((t) => t.source !== "grok");
     const liveAgent = plan.tasks.find((t) => t.source === "grok");
-    for (const t of wave1) {
-      if (abort.current) break;
-      await exec(t);
+    await Promise.all(wave1.map((t) => exec(t)));
+
+    if (!abort.current && hitBag.length) {
+      try {
+        store.fileSearchHits(query, hitBag.slice(), current.briefing);
+        push({
+          at: tick(),
+          kind: "note",
+          source: "CONTROLLER",
+          text: `${hitBag.length} public hits filed into Evidence, People, Places, Dates, and Findings.`,
+        });
+      } catch {
+        /* board still shows hits */
+      }
     }
 
-    if (!abort.current) {
+    if (!abort.current && hitBag.length === 0) {
       push({
         at: tick(),
         kind: "control",
@@ -650,7 +670,7 @@ export function SearchDesk() {
         const follow = await retaskSwarm({
           data: {
             query,
-            hits: current.hits,
+            hits: hitBag.slice(),
             done: wave1.map((t) => ({ source: t.source, query: t.query })),
           },
         });
@@ -662,18 +682,22 @@ export function SearchDesk() {
         if (follow.tasks.length) {
           setTasks((prev) => [...prev, ...follow.tasks]);
           current = { ...current, tasks: [...(current.tasks || []), ...follow.tasks] };
-          for (const t of follow.tasks) {
-            if (abort.current) break;
-            if (t.source === "grok") continue;
-            push({
-              at: tick(),
-              kind: "control",
-              source: t.agent,
-              text: `RETASK → ${t.why}  Query: ${t.query}`,
-              url: t.where,
-            });
-            await exec(t);
-          }
+          await Promise.all(
+            follow.tasks
+              .filter((t) => t.source !== "grok")
+              .map(async (t) => {
+                if (abort.current) return;
+                push({
+                  at: tick(),
+                  kind: "control",
+                  source: t.agent,
+                  text: `RETASK → ${t.why}  Query: ${t.query}`,
+                  url: t.where,
+                });
+                await exec(t);
+              }),
+          );
+          if (hitBag.length) store.fileSearchHits(query, hitBag.slice(), current.briefing);
         } else {
           push({ at: tick(), kind: "control", source: "CONTROLLER", text: "No retask. First wave covered it." });
         }
@@ -682,14 +706,56 @@ export function SearchDesk() {
       }
     }
 
-    if (!abort.current && liveAgent) await exec(liveAgent);
+    if (!abort.current && liveAgent) {
+      push({
+        at: tick(),
+        kind: "search",
+        source: liveAgent.agent,
+        text: `Hitting live web + X for “${query}”`,
+        url: liveAgent.where,
+      });
+      try {
+        const g = await grokPromise;
+        if (g.hits?.length) {
+          addHits(g.hits);
+          liveAgent.hits = g.hits.length;
+          liveAgent.status = "hit";
+        } else liveAgent.status = g.error ? "fail" : hitBag.length ? "hit" : "empty";
+        if (g.text) {
+          current = { ...current, briefing: g.text };
+          push({ at: tick(), kind: "note", source: liveAgent.agent, text: "Briefing ready. Human review required." });
+        }
+        if (g.error) push({ at: tick(), kind: "fail", source: liveAgent.agent, text: g.error });
+        setTasks((prev) => prev.map((x) => (x.id === liveAgent.id ? { ...liveAgent } : x)));
+      } catch {
+        liveAgent.status = "fail";
+        push({ at: tick(), kind: "fail", source: liveAgent.agent, text: "Live web did not answer", url: liveAgent.where });
+      }
+    }
 
-    current = { ...current, status: abort.current ? "failed" : "done" };
+    current = { ...current, status: abort.current ? "failed" : "done", hits: hitBag.slice() };
+    if (hitBag.length || current.briefing) {
+      try {
+        store.fileSearchHits(query, hitBag.slice(), current.briefing);
+        push({
+          at: tick(),
+          kind: "note",
+          source: "CONTROLLER",
+          text: "Hits filed into Evidence, People, Places, and Findings.",
+        });
+      } catch {
+        /* board still shows hits */
+      }
+    }
     push({
       at: tick(),
       kind: "done",
       source: "CONTROLLER",
-      text: abort.current ? "Controller stopped the swarm." : `Sweep complete. ${current.hits.length} public hits.`,
+      text: abort.current
+        ? "Controller stopped the swarm."
+        : hitBag.length
+          ? `Sweep complete. ${hitBag.length} public hits filed into the case.`
+          : "Sweep complete. Public engines returned no pages for that query.",
     });
     store.upsertSwarm(current, true);
     if (current.briefing) store.addChat("Search: " + query, current.briefing);
@@ -709,7 +775,7 @@ export function SearchDesk() {
       <div className="kcn-legal-stamp">AI CONTROLLER • SWARM DIRECTIVE</div>
       <h2 className="kcn-title">Web search</h2>
       <p className="kcn-hint">
-        The controller tasks each agent with its own prompt and sends it where it needs to hit. You will see the order, the query, and the URL. Public sources only.
+        The controller searches public sources, files hits into the case, and links people, places, and dates. You will see engines, URLs, and the hit list.
       </p>
       <div className="mb-3 flex flex-wrap gap-2">
         {FOCUS.map((f) => (
@@ -783,7 +849,10 @@ export function SearchDesk() {
           <span className={shown?.status === "running" ? "kcn-feed-pulse" : ""}>
             {shown?.status === "running" ? "LIVE FEED" : shown ? "SEARCH FEED" : "STANDBY"}
           </span>
-          <span>{shown ? shown.q : "Awaiting query"}</span>
+          <span>
+            {shown ? shown.q : "Awaiting query"}
+            {hits.length ? ` · ${hits.length} hits` : ""}
+          </span>
         </div>
         {events.length === 0 && (
           <div className="kcn-feed-row note">The controller feed will show every prompt, engine, and URL.</div>
@@ -807,9 +876,9 @@ export function SearchDesk() {
           </div>
         ))}
       </div>
-      {hits.length > 0 && (
+      {hits.length > 0 ? (
         <div className="mt-4">
-          <div className="kcn-tiny kcn-muted mb-2">HITS — {hits.length} public sources</div>
+          <div className="kcn-tiny kcn-muted mb-2">HITS — {hits.length} public sources · filed into the case</div>
           {hits.map((h, i) => (
             <a key={h.url + i} className="kcn-hit" href={h.url} target="_blank" rel="noopener noreferrer">
               <b>{h.title}</b>
@@ -819,7 +888,9 @@ export function SearchDesk() {
             </a>
           ))}
         </div>
-      )}
+      ) : shown && shown.status !== "running" ? (
+        <div className="kcn-empty mt-4">No public pages came back for that query. Try a fuller name, a city, or a date.</div>
+      ) : null}
       {shown?.briefing ? (
         <div className="mt-4">
           <div className="kcn-tiny kcn-muted mb-2">BRIEFING</div>
@@ -861,6 +932,171 @@ export function SearchDesk() {
     </section>
   );
 }
+
+export function MediaClip({ id, mime, title }: { id: string; mime?: string; title: string }) {
+  const [url, setUrl] = useState("");
+  const [miss, setMiss] = useState(false);
+  useEffect(() => {
+    let u = "";
+    let live = true;
+    void getMedia(id).then((row) => {
+      if (!live) return;
+      if (!row) {
+        setMiss(true);
+        return;
+      }
+      u = URL.createObjectURL(row.blob);
+      setUrl(u);
+    });
+    return () => {
+      live = false;
+      if (u) URL.revokeObjectURL(u);
+    };
+  }, [id]);
+  if (miss) return <p className="kcn-tiny kcn-muted">Original not on this device.</p>;
+  if (!url) return <p className="kcn-tiny kcn-muted">Original kept on this device…</p>;
+  const kind = (mime || "").toLowerCase();
+  if (kind.startsWith("video") || /\.(mp4|webm|mov|m4v)$/i.test(title)) {
+    return <video className="kcn-preview" src={url} controls playsInline />;
+  }
+  if (kind.startsWith("audio") || /\.(mp3|wav|m4a|aac|ogg|webm)$/i.test(title)) {
+    return <audio className="mt-2 w-full" src={url} controls />;
+  }
+  if (kind.startsWith("image")) return <img className="kcn-preview" src={url} alt={title} />;
+  return (
+    <a className="kcn-btn mt-2" href={url} download={title}>
+      Download original
+    </a>
+  );
+}
+
+export function EvidenceDesk({ onIngest }: { onIngest: (files: FileList) => void }) {
+  const evidence = useKcn((s) => s.evidence);
+  const [title, setTitle] = useState("");
+  const addEvidence = useKcn((s) => s.addEvidence);
+  return (
+    <section>
+      <h2 className="kcn-title">Evidence</h2>
+      <p className="kcn-hint">
+        Photos, videos, voice memos, and documents land here. Text is broken into people, places, dates, and findings.
+      </p>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <input
+          className="kcn-field flex-1"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Manual evidence title"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && title.trim()) {
+              addEvidence(title.trim(), "document");
+              setTitle("");
+            }
+          }}
+        />
+        <button
+          className="kcn-btn"
+          type="button"
+          onClick={() => {
+            if (!title.trim()) return;
+            addEvidence(title.trim(), "document");
+            setTitle("");
+          }}
+        >
+          Add
+        </button>
+        <label className="kcn-btn gold">
+          Add files
+          <input
+            type="file"
+            multiple
+            accept="image/*,video/*,audio/*,.pdf,.docx,.txt,.md,.csv,.json"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files?.length) onIngest(e.target.files);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+      {evidence.length === 0 && <div className="kcn-empty">Nothing filed yet. Add a photo, video, memo, or document.</div>}
+      {evidence.map((e: Evidence) => (
+        <div key={e.id} className="kcn-item mb-2">
+          <b>{e.title}</b>
+          <div className="kcn-tiny kcn-muted">
+            {e.type}
+            {e.bytes ? ` · ${e.bytes < 1024 ? `${e.bytes} B` : `${Math.round(e.bytes / 1024)} KB`}` : ""}
+            {e.duration ? ` · ${e.duration}` : ""}
+            {e.hash ? ` · ${e.hash.slice(0, 12)}…` : ""}
+            {` · ${e.at}`}
+          </div>
+          {e.mediaId ? <MediaClip id={e.mediaId} mime={e.mime} title={e.title} /> : null}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+export function VideoDesk({ onIngest }: { onIngest: (files: FileList) => void }) {
+  const store = useKcn();
+  const videos = store.evidence.filter((e) => e.type === "video" || (e.mime || "").startsWith("video"));
+  const [v, setV] = useState(store.video && store.video.startsWith("http") ? store.video : "");
+  const yt = v.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{6,})/);
+  return (
+    <section>
+      <h2 className="kcn-title">Video</h2>
+      <p className="kcn-hint">Upload a clip or paste a public link. Uploads stay on this device and are hashed into Evidence.</p>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <label className="kcn-btn gold">
+          Upload video
+          <input
+            type="file"
+            accept="video/*"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files?.length) onIngest(e.target.files);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+      <div className="mb-3 flex gap-2">
+        <input className="kcn-field flex-1" value={v} onChange={(e) => setV(e.target.value)} placeholder="Paste a public video URL" />
+        <button
+          className="kcn-btn cyan"
+          type="button"
+          onClick={() => {
+            const u = v.trim();
+            if (!u) return;
+            store.setVideo(u);
+            store.addEvidence(u, "video");
+          }}
+        >
+          Save link
+        </button>
+      </div>
+      {yt ? (
+        <iframe
+          title="Video evidence"
+          className="mb-4 h-80 w-full rounded-xl"
+          src={`https://www.youtube.com/embed/${yt[1]}`}
+          allowFullScreen
+        />
+      ) : null}
+      {videos.length === 0 && !yt ? <div className="kcn-empty">No video filed yet.</div> : null}
+      {videos.map((e) => (
+        <div key={e.id} className="kcn-item mb-3">
+          <b>{e.title}</b>
+          <div className="kcn-tiny kcn-muted">
+            {e.duration || "clip"} · {e.bytes ? `${Math.round(e.bytes / 1024)} KB` : "link"} · {e.at}
+          </div>
+          {e.mediaId ? <MediaClip id={e.mediaId} mime={e.mime || "video/mp4"} title={e.title} /> : null}
+        </div>
+      ))}
+    </section>
+  );
+}
+
 type SpeechLike = {
   continuous: boolean;
   interimResults: boolean;
