@@ -1,9 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
-import { authMiddleware } from "@/lib/auth/middleware";
 
 export const askCase = createServerFn({ method: "POST" })
   .validator((input: { question: string; digest: string }) => input)
-  .middleware([authMiddleware])
   .handler(async ({ data }) => {
     try {
     const apiKey = process.env.XAI_API_KEY;

@@ -24,8 +24,6 @@ export function BootSequence({ onDone }: Props) {
   const [log, setLog] = useState<string[]>([]);
   const [bar, setBar] = useState(0);
   const [muted, setMuted] = useState(false);
-  const [agreed, setAgreed] = useState(false);
-  const [needAgree, setNeedAgree] = useState(false);
   const [showLegal, setShowLegal] = useState(false);
   const [legalTab, setLegalTab] = useState(LEGAL_DOCS[0].id);
 
@@ -56,27 +54,13 @@ export function BootSequence({ onDone }: Props) {
   }, [muted]);
 
   function engage() {
-    if (!agreed) {
-      setNeedAgree(true);
-      return;
-    }
     const a = armAudio();
     recordLegalAcceptance();
     a.drone(true);
     a.ping();
-    let reduce = false;
-    try {
-      reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    } catch {
-      reduce = false;
-    }
-    if (reduce) {
-      a.confirm();
-      a.drone(false);
-      setPhase("out");
-      return;
-    }
-    setPhase("run");
+    a.confirm();
+    a.drone(false);
+    setPhase("out");
   }
 
   useEffect(() => {
@@ -134,26 +118,11 @@ export function BootSequence({ onDone }: Props) {
         <p className="kcn-boot-sub">KETCHUM'S INTELLIGENT INVESTIGATOR</p>
         {phase === "gate" && (
           <>
-            <p className="kcn-hint mt-4">Check the box, then tap Authorize. Returning operators skip this screen.</p>
-            <label className={`kcn-agree ${needAgree && !agreed ? "kcn-agree-need" : ""}`}>
-              <input
-                type="checkbox"
-                checked={agreed}
-                onChange={(e) => {
-                  setAgreed(e.target.checked);
-                  if (e.target.checked) {
-                    setNeedAgree(false);
-                    armAudio().tick();
-                  }
-                }}
-              />
-              <span>I am 18+ and I agree to the User Agreement, Legal Agreement, and License.</span>
-            </label>
-            {needAgree && !agreed ? (
-              <p className="kcn-tiny mt-2 text-gold-2">Check the box first, then authorize.</p>
-            ) : null}
+            <p className="kcn-hint mt-4">
+              By entering you agree you are 18+ and accept the User Agreement, Legal Agreement, and License. Returning operators skip this screen.
+            </p>
             <button className="kcn-btn gold mt-5 min-w-52" type="button" onClick={engage}>
-              AUTHORIZE ACCESS
+              ENTER KCN-II
             </button>
             <button className="kcn-tiny mt-3 text-cyan underline" type="button" onClick={() => setShowLegal((v) => !v)}>
               {showLegal ? "Hide agreements" : "Read License, User Agreement, and Legal Agreement"}

@@ -3,13 +3,14 @@ import { classifyText } from "@/lib/kcn/classify";
 import { askCase } from "@/lib/kcn/assist";
 import { caseDigest } from "@/lib/kcn/intel";
 import { useKcn } from "@/lib/kcn/store";
-import { currentPayload, IDLE_MS, currentInvestigatorId, isUnlocked, lockVault, recordAudit, sealedBackup } from "@/lib/kcn/vault";
-import { easyKey } from "@/lib/kcn/accounts";
+import { currentPayload, IDLE_MS, currentInvestigatorId, isUnlocked, lockVault, openAccountSession, recordAudit, sealedBackup } from "@/lib/kcn/vault";
+import { easyKey, readAutoSecret } from "@/lib/kcn/accounts";
 import { parseIntent, intentLabel } from "@/lib/kcn/controller";
 import { downloadText } from "@/lib/kcn/legal-copy";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
-import { RedirectToSignIn, UserButton } from "@/lib/auth/gates";
+import { UserButton } from "@/lib/auth/gates";
 import { signOut } from "@/lib/auth/client";
+import { Link } from "@tanstack/react-router";
 import { BootSequence } from "./boot-sequence";
 import { CertificationDesk } from "./certification-desk";
 import {
@@ -107,7 +108,7 @@ const OPEN_DEFAULT: Record<string, boolean> = {
 
 export function KcnConsole() {
   const store = useKcn();
-  const { user, isPending } = useCurrentUserState();
+  const { user } = useCurrentUserState();
   const [mod, setMod] = useState("home");
   const [scanOpen, setScanOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -116,6 +117,9 @@ export function KcnConsole() {
   const [savedAt, setSavedAt] = useState("VAULT STANDBY");
   const [booted, setBooted] = useState(false);
   const [vaultOpen, setVaultOpen] = useState(false);
+  const [needPass, setNeedPass] = useState(false);
+  const [sessionBusy, setSessionBusy] = useState(true);
+  const [sealedAway, setSealedAway] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [navQ, setNavQ] = useState("");
@@ -156,16 +160,18 @@ export function KcnConsole() {
     const events: (keyof WindowEventMap)[] = ["pointerdown", "keydown", "touchstart"];
     events.forEach((e) => window.addEventListener(e, bump, { passive: true }));
     const t = window.setInterval(() => {
-      if (Date.now() - lastAct.current > IDLE_MS) lockNow("Idle lock.");
-    }, 15000);
-    const vis = () => {
-      if (document.visibilityState === "hidden") lastAct.current = Date.now() - IDLE_MS + 15000;
-    };
-    document.addEventListener("visibilitychange", vis);
+      if (Date.now() - lastAct.current > IDLE_MS) {
+        try {
+          store.persist();
+        } catch {
+          /* keep working */
+        }
+        lastAct.current = Date.now();
+      }
+    }, 30000);
     return () => {
       events.forEach((e) => window.removeEventListener(e, bump));
       clearInterval(t);
-      document.removeEventListener("visibilitychange", vis);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vaultOpen]);
@@ -327,7 +333,10 @@ export function KcnConsole() {
     setMoreOpen(false);
     setAsk("");
     setCoach(true);
-    ping(msg || "Vault locked. Case files are sealed.");
+    const auto = readAutoSecret(user?.id || "guest");
+    setNeedPass(!auto);
+    setSealedAway(!!auto);
+    ping(msg || "Workspace locked. Case files are sealed.");
   }
 
   function openVault() {
@@ -343,9 +352,68 @@ export function KcnConsole() {
     setCmdOpen(false);
     setVaultOpen(true);
     lastAct.current = Date.now();
-    ping("Vault open for " + (p?.meta.operatorName || p?.case.operator || user?.displayName || "this investigator") + ". Isolated to this account.");
+    ping("Vault open for " + (p?.meta.operatorName || p?.case.operator || user?.displayName || "this investigator") + ".");
     void recordAudit("CONSOLE_OPEN").catch(() => undefined);
   }
+
+  function applySession(r: "opened" | "needs-pass") {
+    if (r === "opened") {
+      const p = currentPayload();
+      if (p) store.hydrateFrom(p.case);
+      setNeedPass(false);
+      setSealedAway(false);
+      setVaultOpen(true);
+      lastAct.current = Date.now();
+    } else {
+      setNeedPass(true);
+      setSealedAway(false);
+      setVaultOpen(false);
+    }
+  }
+
+  function reopenSession() {
+    setSealedAway(false);
+    setSessionBusy(true);
+    const id = user?.id || "guest";
+    const name = user?.displayName || user?.primaryEmail?.split("@")[0] || "Investigator";
+    void openAccountSession(id, name)
+      .then(applySession)
+      .catch(() => {
+        setNeedPass(true);
+        setVaultOpen(false);
+      })
+      .finally(() => setSessionBusy(false));
+  }
+
+  useEffect(() => {
+    if (!booted) return;
+    let live = true;
+    setSessionBusy(true);
+    const id = user?.id || "guest";
+    const name = user?.displayName || user?.primaryEmail?.split("@")[0] || "Investigator";
+    try {
+      store.persist();
+    } catch {
+      /* ignore */
+    }
+    void openAccountSession(id, name)
+      .then((r) => {
+        if (!live) return;
+        applySession(r);
+      })
+      .catch(() => {
+        if (!live) return;
+        setNeedPass(true);
+        setVaultOpen(false);
+      })
+      .finally(() => {
+        if (live) setSessionBusy(false);
+      });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booted, user?.id]);
 
   function saveCase() {
     if (!isUnlocked()) {
@@ -562,8 +630,11 @@ export function KcnConsole() {
           onWiped={() => {
             store.lockMemory();
             setVaultOpen(false);
+            setNeedPass(false);
+            setSealedAway(false);
             setMod("home");
-            ping("This account's vault was wiped. Other signed-in accounts were not touched.");
+            ping("This account's vault was wiped. Opening a fresh workspace.");
+            reopenSession();
           }}
         />
       );
@@ -598,26 +669,37 @@ export function KcnConsole() {
   if (!booted) {
     return <BootSequence onDone={() => setBooted(true)} />;
   }
-  if (isPending) {
+  if (sessionBusy || (!vaultOpen && !needPass && !sealedAway)) {
     return (
-      <div className="kcn-boot" aria-label="Confirming operator identity">
+      <div className="kcn-boot" aria-label="Opening workspace">
         <Starfield />
         <div className="kcn-boot-stage">
-          <p className="kcn-boot-sub">CONFIRMING OPERATOR IDENTITY</p>
+          <p className="kcn-boot-sub">OPENING WORKSPACE</p>
         </div>
       </div>
     );
   }
-  if (!user) {
-    return <RedirectToSignIn />;
+  if (sealedAway && !vaultOpen) {
+    return (
+      <div className="kcn-boot" aria-label="Workspace locked">
+        <Starfield />
+        <div className="kcn-boot-stage">
+          <p className="kcn-boot-sub">WORKSPACE LOCKED</p>
+          <p className="kcn-hint mt-4">Case files stay sealed on this device. Tap to keep working.</p>
+          <button className="kcn-btn gold mt-5 min-w-52" type="button" onClick={reopenSession}>
+            Reopen
+          </button>
+        </div>
+      </div>
+    );
   }
-  if (!vaultOpen) {
+  if (needPass && !vaultOpen) {
     return (
       <VaultGate
         onOpen={openVault}
-        userId={user.id}
-        operatorName={user.displayName || user.primaryEmail?.split("@")[0] || "Investigator"}
-        email={user.primaryEmail || user.displayName || "signed-in operator"}
+        userId={user?.id || "guest"}
+        operatorName={user?.displayName || user?.primaryEmail?.split("@")[0] || "Investigator"}
+        email={user?.primaryEmail || user?.displayName || "this device"}
       />
     );
   }
@@ -633,14 +715,20 @@ export function KcnConsole() {
             <h1>
               KCN-<span>II</span>
             </h1>
-            <p>CASE INTELLIGENCE • {store.operator || user.primaryEmail || "SEALED VAULT"}</p>
+            <p>CASE INTELLIGENCE • {store.operator || user?.primaryEmail || "READY"}</p>
           </div>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <div className={`kcn-pill ${vaultOpen ? "live" : ""}`}>{vaultOpen ? "OPEN" : "LOCKED"}</div>
-          <div className="kcn-pill">{user.primaryEmail || store.operator || "Investigator"}</div>
+          <div className="kcn-pill">{user?.primaryEmail || store.operator || "Investigator"}</div>
           <div className="kcn-userchip">
-            <UserButton />
+            {user ? (
+              <UserButton />
+            ) : (
+              <Link to="/login" className="kcn-btn gold">
+                Sign in
+              </Link>
+            )}
           </div>
           <div className="kcn-appbar-desk">
             <div className="kcn-pill">{clock}</div>
@@ -660,6 +748,7 @@ export function KcnConsole() {
               />
             </label>
           </div>
+          {user ? (
           <button
             className="kcn-btn"
             aria-label="Switch account"
@@ -670,6 +759,7 @@ export function KcnConsole() {
           >
             Switch account
           </button>
+          ) : null}
           <button className="kcn-btn" onClick={() => lockNow()}>Lock</button>
         </div>
       </header>
@@ -893,7 +983,7 @@ function HomeDesk({
       <p className="kcn-hint">Three moves. Photo or file. Names. Then ask.</p>
       {coach ? (
         <div className="kcn-coach">
-          <p>You do not need every desk. Scan something, add who it is about, then ask. Sign out to keep this case in your account only.</p>
+          <p>Scan, add a name, or search. Sign in is optional if you want this case on an email account.</p>
           <button className="kcn-btn gold" type="button" onClick={onDismissCoach}>
             Got it
           </button>

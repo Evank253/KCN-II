@@ -17,7 +17,7 @@ function stashPreviewToken(data: unknown) {
 }
 
 function Login() {
-  const { user, isPending } = useCurrentUserState();
+  const { user } = useCurrentUserState();
   const [mode, setMode] = useState<"in" | "up">("in");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -27,16 +27,6 @@ function Login() {
   const [busy, setBusy] = useState(false);
   const [show, setShow] = useState(false);
 
-  if (isPending) {
-    return (
-      <div className="kcn-boot" aria-label="Confirming identity">
-        <Starfield />
-        <div className="kcn-boot-stage">
-          <p className="kcn-boot-sub">CONFIRMING OPERATOR IDENTITY</p>
-        </div>
-      </div>
-    );
-  }
   if (user) return <Navigate to="/" />;
 
   async function submit() {
@@ -112,7 +102,7 @@ function Login() {
         </h1>
         <p className="kcn-boot-sub">{mode === "up" ? "CREATE ACCOUNT" : "OPERATOR SIGN-IN"}</p>
         <p className="kcn-hint mt-3">
-          No Grok account required. Sign in with email. Each investigator has a separate sealed vault. Share this console — they create their own account.
+          Sign in is optional. Search, scan, and desks work without an account. Use email only if you want this case on its own login.
         </p>
         {authEnabled ? (
           <form
@@ -177,6 +167,9 @@ function Login() {
             >
               {mode === "up" ? "Already have an account? Sign in" : "New investigator? Create an account"}
             </button>
+            <a className="kcn-btn mt-3 w-full" href="/">
+              Continue without an account
+            </a>
           </form>
         ) : (
           <p className="kcn-hint">Sign-in is disabled.</p>

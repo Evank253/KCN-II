@@ -1,16 +1,21 @@
 import type { KcnState } from "./store";
 import {
   activeInvestigatorId,
+  autoSecretKey,
   easyKey,
+  ensureInvestigator,
   investigatorHasVault,
   listInvestigators,
+  makeAutoSecret,
+  readAutoSecret,
   registerInvestigator,
   removeInvestigator,
   setActiveInvestigatorId,
   touchInvestigator,
   vaultKey,
+  writeAutoSecret,
 } from "./accounts";
-import { deleteCloudVault, pushAccountVault } from "./cloud-vault";
+import { deleteCloudVault, pullAccountVault, pushAccountVault } from "./cloud-vault";
 import {
   KDF_ITER,
   b64,
@@ -26,7 +31,7 @@ import {
 
 export const VAULT_STORAGE = "KCN-II-VAULT";
 export const PLAIN_STORAGE = "KCN-II";
-export const IDLE_MS = 5 * 60 * 1000;
+export const IDLE_MS = 30 * 60 * 1000;
 
 export type AuditEntry = {
   seq: number;
@@ -155,8 +160,7 @@ export function sealedStorageLooksClean(): boolean {
 export async function createVault(passphrase: string, seed?: KcnState, operatorName?: string, ownerId?: string): Promise<void> {
   if (!cryptoReady()) throw new Error("Web Crypto is not available.");
   const name = (operatorName || "Investigator").trim().slice(0, 48) || "Investigator";
-  const user = ownerId ? { id: ownerId, name } : registerInvestigator(name);
-  if (ownerId) setActiveInvestigatorId(ownerId);
+  const user = ownerId ? ensureInvestigator(ownerId, name) : registerInvestigator(name);
   activeId = user.id;
   const salt = bytes(16);
   const key = await deriveKey(passphrase, salt);
@@ -188,7 +192,7 @@ export async function createVault(passphrase: string, seed?: KcnState, operatorN
   overwriteWipe(PLAIN_STORAGE);
   payload = next;
   touchInvestigator(user.id);
-  void pushAccountVault(user.id);
+  if (user.id !== "guest") void pushAccountVault(user.id);
 }
 
 export async function unlockVault(passphrase: string, investigatorId?: string): Promise<VaultPayload> {
@@ -251,7 +255,7 @@ async function writeSealed(id: string, key: CryptoKey, data: VaultPayload): Prom
   data.case = sanitizeCase(data.case);
   const { iv, ct } = await encryptJson(key, data);
   localStorage.setItem(vaultKey(id), JSON.stringify({ ...sealed, iv, ct, investigatorId: id }));
-  void pushAccountVault(id);
+  if (id !== "guest") void pushAccountVault(id);
 }
 
 export async function persistCase(state: KcnState): Promise<void> {
@@ -297,20 +301,23 @@ async function persistPayload(): Promise<void> {
   });
 }
 
-export async function wipeVault(): Promise<void> {
-  const id = activeId || activeInvestigatorId();
+export async function wipeVault(targetId?: string): Promise<void> {
+  const id = targetId || activeId || activeInvestigatorId();
   lockVault();
   await persistChain.catch(() => undefined);
   if (id) {
     overwriteWipe(vaultKey(id));
     overwriteWipe(easyKey(id));
+    overwriteWipe(autoSecretKey(id));
     removeInvestigator(id);
   }
   overwriteWipe(PLAIN_STORAGE);
-  try {
-    await deleteCloudVault();
-  } catch {
-    /* still wiped locally */
+  if (id && id !== "guest") {
+    try {
+      await deleteCloudVault();
+    } catch {
+      /* still wiped locally */
+    }
   }
 }
 
@@ -326,8 +333,7 @@ export async function importSealed(raw: string, passphrase: string, operatorName
   const key = await deriveKey(passphrase, unb64(parsed.salt));
   const next = await decryptJson<VaultPayload>(key, parsed.iv, parsed.ct);
   const name = (operatorName || next.meta?.operatorName || next.case?.operator || "Investigator").trim().slice(0, 48);
-  const user = ownerId ? { id: ownerId, name } : registerInvestigator(name);
-  if (ownerId) setActiveInvestigatorId(ownerId);
+  const user = ownerId ? ensureInvestigator(ownerId, name) : registerInvestigator(name);
   next.meta = {
     ...(next.meta || { created: parsed.created, lastOpen: "", idleMs: IDLE_MS }),
     investigatorId: user.id,
@@ -344,7 +350,7 @@ export async function importSealed(raw: string, passphrase: string, operatorName
   payload.audit = await chainAudit(payload.audit || [], "VAULT_IMPORTED");
   touchInvestigator(user.id);
   await persistPayload();
-  void pushAccountVault(user.id);
+  if (user.id !== "guest") void pushAccountVault(user.id);
   return payload;
 }
 
@@ -410,4 +416,32 @@ export async function vaultFingerprint(): Promise<string> {
   const sealed = readSealed();
   if (!sealed) return "";
   return sha256(sealed.ct + sealed.salt + sealed.iv);
+}
+
+export async function openAccountSession(userId: string, operatorName?: string): Promise<"opened" | "needs-pass"> {
+  const id = userId || "guest";
+  const name = (operatorName || "Investigator").trim().slice(0, 48) || "Investigator";
+  if (id !== "guest") {
+    try {
+      await pullAccountVault(id);
+    } catch {
+      /* offline */
+    }
+  }
+  const auto = readAutoSecret(id);
+  if (investigatorHasVault(id) || readSealedFor(id)) {
+    if (auto) {
+      try {
+        await unlockVault(auto, id);
+        return "opened";
+      } catch {
+        return "needs-pass";
+      }
+    }
+    return "needs-pass";
+  }
+  const secret = makeAutoSecret();
+  writeAutoSecret(id, secret);
+  await createVault(secret, undefined, name, id);
+  return "opened";
 }

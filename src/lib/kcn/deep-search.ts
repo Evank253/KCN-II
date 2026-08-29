@@ -1,5 +1,4 @@
 import { createServerFn } from "@tanstack/react-start";
-import { authMiddleware } from "@/lib/auth/middleware";
 
 export type SearchHit = {
   title: string;
@@ -260,7 +259,6 @@ function dedupe(hits: SearchHit[]) {
 
 export const probeSource = createServerFn({ method: "POST" })
   .validator((input: { source: SourceId; query: string }) => input)
-  .middleware([authMiddleware])
   .handler(async ({ data }): Promise<{ ok: boolean; hits: SearchHit[]; error?: string; where: string }> => {
     const q = (data.query || "").trim().slice(0, 180);
     const lane = SEARCH_LANES.find((l) => l.id === data.source);
@@ -419,7 +417,6 @@ async function grokDeep(
 
 export const liveGrokSearch = createServerFn({ method: "POST" })
   .validator((input: { query: string; hits: SearchHit[] }) => input)
-  .middleware([authMiddleware])
   .handler(async ({ data }) => {
     const q = (data.query || "").trim().slice(0, 180);
     if (!q) return { ok: false as const, text: "", hits: [] as SearchHit[], error: "No query." };
@@ -626,7 +623,6 @@ async function grokJson(prompt: string): Promise<string> {
 
 export const planSwarm = createServerFn({ method: "POST" })
   .validator((input: { query: string; focus: SwarmFocus; hint: CaseHint }) => input)
-  .middleware([authMiddleware])
   .handler(async ({ data }): Promise<ControllerPlan> => {
     const q = (data.query || "").trim().slice(0, 160);
     const focus = data.focus || "auto";
@@ -668,7 +664,6 @@ export const planSwarm = createServerFn({ method: "POST" })
 
 export const retaskSwarm = createServerFn({ method: "POST" })
   .validator((input: { query: string; hits: SearchHit[]; done: { source: SourceId; query: string }[] }) => input)
-  .middleware([authMiddleware])
   .handler(async ({ data }): Promise<{ intent: string; tasks: AgentTask[]; from: "ai" | "local" }> => {
     const q = (data.query || "").trim().slice(0, 160);
     const hits = Array.isArray(data.hits) ? data.hits.slice(0, 16) : [];

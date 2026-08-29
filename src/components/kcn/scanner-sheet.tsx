@@ -39,7 +39,7 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
   const [searches, setSearches] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [imageDataUrl, setImageDataUrl] = useState("");
-  const [consent, setConsent] = useState(false);
+  const [consent, setConsent] = useState(true);
   const fileExtraction = useKcn((s) => s.fileExtraction);
   const stampIngest = useKcn((s) => s.stampIngest);
   const addScan = useKcn((s) => s.addScan);
@@ -188,10 +188,6 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
       return;
     }
     const sendPhoto = Boolean(imageDataUrl) && consent;
-    if (imageDataUrl && !consent) {
-      toast("Check the box to send this photo off-device, or use File text only.");
-      return;
-    }
     setBusy(true);
     setStatus("Running your instruction…");
     try {
@@ -253,7 +249,7 @@ export function ScannerSheet({ open, onClose, toast }: Props) {
           </button>
         </div>
         <p className="kcn-hint mb-3">
-          Capture or pick a photo. Choose what to do. Filing stays on this device. Lookup sends the photo only if you check the box.
+          Capture or pick a photo, then run. Lookup uses the photo. Uncheck below if you want text only.
         </p>
         <div className="grid gap-3 md:grid-cols-2">
           <div>

@@ -40,6 +40,34 @@ export function easyKey(id: string) {
   return `KCN-II-EASY:${id}`;
 }
 
+export function autoSecretKey(id: string) {
+  return `KCN-II-AUTOKEY:${id}`;
+}
+
+export function readAutoSecret(id: string): string | null {
+  try {
+    return localStorage.getItem(autoSecretKey(id));
+  } catch {
+    return null;
+  }
+}
+
+export function writeAutoSecret(id: string, secret: string) {
+  try {
+    localStorage.setItem(autoSecretKey(id), secret);
+  } catch {
+    /* private mode */
+  }
+}
+
+export function makeAutoSecret(): string {
+  const b = new Uint8Array(24);
+  crypto.getRandomValues(b);
+  let s = "";
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s);
+}
+
 export function migrateLegacyInvestigators(): Investigator[] {
   const users = readReg();
   try {
@@ -83,6 +111,24 @@ export function setActiveInvestigatorId(id: string | null) {
   } catch {
     /* private mode */
   }
+}
+
+export function ensureInvestigator(id: string, name: string): Investigator {
+  const existing = getInvestigator(id);
+  if (existing) {
+    setActiveInvestigatorId(id);
+    return existing;
+  }
+  const trimmed = (name || "Investigator").trim().slice(0, 48) || "Investigator";
+  const user: Investigator = {
+    id,
+    name: trimmed,
+    created: new Date().toISOString(),
+    lastOpen: "",
+  };
+  writeReg([...listInvestigators(), user]);
+  setActiveInvestigatorId(id);
+  return user;
 }
 
 export function registerInvestigator(name: string): Investigator {

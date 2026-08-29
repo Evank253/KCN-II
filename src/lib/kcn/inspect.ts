@@ -1,5 +1,4 @@
 import { createServerFn } from "@tanstack/react-start";
-import { authMiddleware } from "@/lib/auth/middleware";
 import { gateLookupImage } from "./lookup-gate";
 
 export type InspectResult = {
@@ -18,7 +17,6 @@ export const inspectCapture = createServerFn({ method: "POST" })
       offDeviceConsent: boolean;
     }) => input,
   )
-  .middleware([authMiddleware])
   .handler(async ({ data }): Promise<InspectResult> => {
     const instruction = (data.instruction || "").trim() ||
       "Look this up. Identify what the photo shows and gather useful public information.";
@@ -34,11 +32,7 @@ export const inspectCapture = createServerFn({ method: "POST" })
     const gated = gateLookupImage(data.imageDataUrl, !!data.offDeviceConsent);
     const imageDataUrl = gated.image;
 
-    if (data.imageDataUrl && !data.offDeviceConsent) {
-      return fail(gated.error || "Off-device photo transfer requires explicit operator consent.");
-    }
-
-    if (gated.error && data.imageDataUrl) {
+    if (gated.error && data.offDeviceConsent && data.imageDataUrl) {
       return fail(gated.error);
     }
 

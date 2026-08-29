@@ -16,15 +16,16 @@ KCN-II is **not** law enforcement, **not** a court, and **not** a classified gov
 
 ## Operator start
 
-1. Confirm you are 18+ and accept the Legal Pack.
-2. Tap **AUTHORIZE ACCESS**. Audio arms from that tap.
-3. **Sign in with email.** No Grok, Google, or X login. Create an account if you are new. Each email is its own sealed case.
-4. Create or unlock **your sealed vault** (12+ character passphrase, separate from the sign-in password). There is no recovery if the vault passphrase is lost.
-5. Work the desks. **Ask** does what you typed — `search Jane Doe` runs the swarm; `add person …` files the name.
-6. **Switch account** / **Sign out** locks this case. A different email cannot open it.
-7. Optional: **Vault → Run certification** for a live IDPC-1.0 control test on this device.
+1. First visit: tap **ENTER KCN-II**. That records the Legal Pack. Returning operators skip this screen.
+2. The workspace opens. **Sign in is optional.** Search, scan, files, and desks work without an account.
+3. Optional: **Sign in with email** if you want this case on its own login (no Grok / Google / X).
+4. Work the desks. **Ask** does what you typed — `search Jane Doe` runs the swarm; `add person …` files the name.
+5. **Lock** hides the board. Tap **Reopen** to keep working. Older passphrase-only vaults still ask for that passphrase.
+6. Optional: **Vault → Run certification** for a live IDPC-1.0 control test on this device.
 
-Idle lock is five minutes. **Lock** wipes keys and case text from memory but keeps you signed in. **Export** downloads ciphertext only — still needs the vault passphrase. **Wipe this investigator** removes only this account's vault.
+New workspaces seal themselves on this device. You are not asked for a second vault password unless you choose one, or you already had a passphrase vault.
+
+**Lock** wipes keys from memory. **Export** downloads ciphertext only. **Wipe this investigator** removes only this account's vault.
 
 ---
 
@@ -33,7 +34,7 @@ Idle lock is five minutes. **Lock** wipes keys and case text from memory but kee
 ### Collect
 | Desk | What it does |
 |---|---|
-| Scan | Camera or photo. On-device OCR. Lookup only if you check consent. |
+| Scan | Camera or photo. On-device OCR. Lookup runs unless you uncheck photo transfer. |
 | Files | Documents and pasted text. Names, places, and findings are extracted onto the board. |
 | Interview | Record on this device. Speech-to-text files a transcript when the browser supports it. |
 | Video | File a public video link as evidence. |
@@ -80,19 +81,19 @@ Idle lock is five minutes. **Lock** wipes keys and case text from memory but kee
 | Vault | Lock, sealed export, wipe this account, IDPC-1.0 live control test. |
 | Legal | License, User Agreement, Legal Agreement. |
 
-Also: idle lock (5 minutes), Switch account / Sign out, Ask bar (optional), cinematic boot, AES-256-GCM sealed vault per email.
+Also: optional email sign-in, Ask bar (optional), boot screen, AES-256-GCM sealed vault per investigator (guest or email).
 
-Photos are stripped from the vault. Case ciphertext is stored only for that signed-in account. Lookups leave the device only if you consent.
+Photos are stripped from the vault. Case ciphertext for a signed-in email stays with that account. Lookups leave the device unless you uncheck photo transfer.
 
 ---
 
 ## Vault
 
-- Email sign-in so each investigator has their own account. No Grok account required to use a shared link.
-- AES-256-GCM at rest, including the private ciphertext stored for that account
+- Email sign-in is optional so each investigator can have their own account. No Grok account required to use a shared link.
+- AES-256-GCM at rest, including private ciphertext stored for a signed-in account
 - PBKDF2-SHA256, 250,000 iterations, non-extractable key
-- Sign-in password and vault passphrase are separate. The server never receives the vault passphrase
-- Passphrase never stored
+- New workspaces auto-seal on this device. A vault passphrase is optional extra lock, not required to start
+- Sign-in password (if you use email) is separate from any vault passphrase. The server never receives the vault passphrase
 - Hash-chained audit inside the sealed blob
 - Sealed export / sealed import only — plaintext case files are rejected
 - A persist in flight cannot write into another account's vault
@@ -114,7 +115,7 @@ You remain the data controller of your case file.
 
 ## Legal Pack (required)
 
-Using the console, checking the authorization box, or tapping **AUTHORIZE ACCESS** means you accept all three:
+Using the console or tapping **ENTER KCN-II** means you accept all three:
 
 | Document | File |
 |---|---|

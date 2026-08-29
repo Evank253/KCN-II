@@ -95,6 +95,7 @@ export const deleteCloudVault = createServerFn({ method: "POST" })
 
 export async function pushAccountVault(ownerId: string): Promise<void> {
   try {
+    if (!ownerId || ownerId === "guest") return;
     const raw = localStorage.getItem(vaultKey(ownerId));
     if (!raw) return;
     if (!belongsTo(raw, ownerId)) return;

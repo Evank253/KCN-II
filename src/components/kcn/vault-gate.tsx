@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { passphraseScore } from "@/lib/kcn/crypto";
-import { vaultKey } from "@/lib/kcn/accounts";
+import { readAutoSecret, vaultKey } from "@/lib/kcn/accounts";
 import { pullAccountVault } from "@/lib/kcn/cloud-vault";
-import { createVault, importSealed, unlockVault, vaultExistsFor } from "@/lib/kcn/vault";
+import { createVault, importSealed, openAccountSession, unlockVault, vaultExistsFor, wipeVault } from "@/lib/kcn/vault";
 import { Seal } from "./seal";
 
 type Props = {
@@ -29,8 +29,19 @@ export function VaultGate({ onOpen, userId, operatorName, email }: Props) {
     setReady(false);
     setName(operatorName || email.split("@")[0] || "Investigator");
     void (async () => {
-      await pullAccountVault(userId);
+      if (userId !== "guest") await pullAccountVault(userId);
       if (!live) return;
+      const auto = readAutoSecret(userId);
+      if (auto) {
+        try {
+          await unlockVault(auto, userId);
+          if (!live) return;
+          onOpen();
+          return;
+        } catch {
+          /* fall through to passphrase */
+        }
+      }
       const exists = vaultExistsFor(userId);
       setMode(exists ? "unlock" : "create");
       setReady(true);
@@ -95,6 +106,21 @@ export function VaultGate({ onOpen, userId, operatorName, email }: Props) {
     }
   }
 
+  async function startEasy() {
+    setBusy(true);
+    setErr("");
+    try {
+      if (mode === "unlock" || vaultExistsFor(userId)) await wipeVault(userId);
+      const r = await openAccountSession(userId, name.trim() || operatorName);
+      if (r === "opened") onOpen();
+      else setErr("Could not open a workspace. Try a passphrase vault instead.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not open a workspace.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function submit() {
     if (busy) return;
     if (mode === "unlock") void unlock();
@@ -130,7 +156,7 @@ export function VaultGate({ onOpen, userId, operatorName, email }: Props) {
         </h1>
         <p className="kcn-boot-sub">{title}</p>
         <p className="kcn-hint mt-3">
-          Signed in as {email || operatorName}. This vault belongs only to this account. Other emails cannot open it.
+          Optional extra lock for this account. Most operators can skip this and keep working.
         </p>
         <div className="kcn-vault-form">
           {mode === "unlock" ? (
@@ -191,14 +217,19 @@ export function VaultGate({ onOpen, userId, operatorName, email }: Props) {
             </p>
           ) : null}
           {err ? <p className="kcn-tiny text-gold-2">{err}</p> : null}
+          {mode !== "unlock" ? (
+            <button className="kcn-btn gold mt-3 w-full" type="button" disabled={busy} onClick={() => void startEasy()}>
+              {busy ? "Opening…" : "Continue without a vault passphrase"}
+            </button>
+          ) : null}
           {mode === "unlock" && (
             <button className="kcn-btn gold mt-3 w-full" disabled={busy || !pass} onClick={() => void unlock()}>
               {busy ? "Opening…" : "Open vault"}
             </button>
           )}
           {mode === "create" && (
-            <button className="kcn-btn gold mt-3 w-full" disabled={busy} onClick={() => void create()}>
-              {busy ? "Sealing…" : "Create sealed vault"}
+            <button className="kcn-btn mt-3 w-full" disabled={busy} onClick={() => void create()}>
+              {busy ? "Sealing…" : "Create a passphrase vault instead"}
             </button>
           )}
           {mode === "import" && (
@@ -240,6 +271,16 @@ export function VaultGate({ onOpen, userId, operatorName, email }: Props) {
             >
               Restore backup into this account
             </button>
+            {mode === "unlock" ? (
+              <button
+                className="kcn-tiny text-gold-2 underline"
+                type="button"
+                disabled={busy}
+                onClick={() => void startEasy()}
+              >
+                Start a new empty workspace (erases this vault)
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
